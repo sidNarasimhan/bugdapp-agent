@@ -13,6 +13,7 @@
 import { createOpenRouterClient, type MessageParam, type ContentBlock } from '../../llm/openrouter.js';
 import { routeToolCall, allToolDefs } from './tool-router.js';
 import { profileContextPrompt } from './profile-context.js';
+import { loadKnowledge, knowledgeBlock } from './knowledge-loader.js';
 import { getOrLaunchSession, installExitHooks } from './session.js';
 import { findProfile } from '../../agent/profiles/registry.js';
 import { avantisProfile } from '../../agent/profiles/avantis.js';
@@ -56,7 +57,7 @@ export interface ExecutorResult {
 
 export type StepListener = (step: ExecutorStep) => void | Promise<void>;
 
-function systemPrompt(profile: DAppProfile): string {
+function systemPrompt(profile: DAppProfile, knowledge: string): string {
   return [
     'You are the executor agent of bugdapp-agent, a Web3 QA system. Your job is to drive a real Chromium browser with a MetaMask test wallet to carry out a single user task on a live dApp, then either complete or fail with evidence.',
     '',
@@ -70,9 +71,12 @@ function systemPrompt(profile: DAppProfile): string {
     '5. Never invent refs. If a ref from an earlier snapshot is stale (page changed), take a new snapshot.',
     '6. If the state classifier or a CTA label indicates a blocker (insufficient balance, wrong network, unconnected), call task_failed with a clear reason — do not loop trying to brute-force past it.',
     '7. Be terse. Each assistant turn should be a short plan of the next 1–2 actions, then the tool call. No essays.',
+    '8. The KNOWLEDGE block below comes from the crawler + comprehension pass. Trust it over your own assumptions — it reflects what Avantis\'s real UI + docs say. If a constraint contradicts the user\'s task (e.g. asked 74x leverage but ZFP minimum is 75x), surface the conflict and ask to adjust via task_failed.',
     '',
     profileContextPrompt(profile),
-  ].join('\n');
+    '',
+    knowledge,
+  ].filter(Boolean).join('\n');
 }
 
 async function takeInitialSnapshot(ctx: BrowserCtx): Promise<string> {
@@ -93,6 +97,7 @@ export async function runExecutor(
     ?? (input.initialUrl ? findProfile(input.initialUrl) : null)
     ?? avantisProfile;
   const initialUrl = input.initialUrl ?? profile.url;
+  const knowledge = knowledgeBlock(loadKnowledge(initialUrl));
   const ctx = await getOrLaunchSession(initialUrl);
 
   const firstSnapshot = await takeInitialSnapshot(ctx);
@@ -121,7 +126,7 @@ export async function runExecutor(
         model: EXECUTOR_MODEL,
         max_tokens: 2048,
         temperature: 0,
-        system: systemPrompt(profile),
+        system: systemPrompt(profile, knowledge),
         tools,
         messages,
       });
