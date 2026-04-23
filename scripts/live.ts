@@ -175,18 +175,21 @@ async function main() {
     console.log('[live] --skip-outreach: not writing OUTREACH.md');
   }
 
-  // Step 5 (optional): run the suite — headful Playwright
+  // Step 5 (optional): run the suite — headful Playwright + agent self-heal on failures
   if (args.runSuite) {
-    banner(5, totalSteps, 'Run generated suite (Playwright, headful)');
+    banner(5, totalSteps, 'Run generated suite (self-healing)');
     const testsDir = join(outputDir, 'tests');
     if (!existsSync(testsDir)) {
       console.warn(`[live] no tests directory at ${testsDir} — skipping`);
     } else {
-      const child = await execa('npx', ['playwright', 'test', '--reporter=json'], {
-        cwd: outputDir, env: process.env, stdio: 'inherit', reject: false,
-        timeout: 15 * 60 * 1000,
+      const { runSuiteWithHealing, formatHealSummary } = await import('../src/chat/agent/heal-runner.js');
+      const summary = await runSuiteWithHealing({
+        dAppUrl: args.url,
+        outputDir,
+        verifyAfterHeal: true,
+        onLine: (l) => console.log(l),
       });
-      console.log(`[live] playwright exited ${child.exitCode}`);
+      console.log('\n' + formatHealSummary(summary));
     }
   }
 

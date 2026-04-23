@@ -12,10 +12,12 @@
  */
 import { createOpenRouterClient, type MessageParam, type ContentBlock } from '../../llm/openrouter.js';
 import { routeToolCall, allToolDefs } from './tool-router.js';
-import { avantisContextPrompt } from './avantis-context.js';
+import { profileContextPrompt } from './profile-context.js';
 import { getOrLaunchSession, installExitHooks } from './session.js';
+import { findProfile } from '../../agent/profiles/registry.js';
 import { avantisProfile } from '../../agent/profiles/avantis.js';
 import type { BrowserCtx } from '../../types.js';
+import type { DAppProfile } from '../../agent/profiles/types.js';
 
 const EXECUTOR_MODEL = process.env.EXECUTOR_MODEL ?? 'anthropic/claude-sonnet-4.5';
 const MAX_ITERATIONS = 20;
@@ -25,6 +27,8 @@ const MAX_WALL_TIME_MS = 8 * 60 * 1000;
 export interface ExecutorTaskInput {
   task: string;
   initialUrl?: string;
+  /** Optional explicit profile; if omitted, resolved from initialUrl via registry. */
+  profile?: DAppProfile;
 }
 
 export interface ExecutorStep {
@@ -33,6 +37,8 @@ export interface ExecutorStep {
   input: Record<string, unknown>;
   success: boolean;
   output: string;
+  /** Playwright-equivalent code line for this action (empty for no-op tools like snapshot). */
+  code?: string;
   durationMs: number;
 }
 
@@ -50,7 +56,7 @@ export interface ExecutorResult {
 
 export type StepListener = (step: ExecutorStep) => void | Promise<void>;
 
-function systemPrompt(): string {
+function systemPrompt(profile: DAppProfile): string {
   return [
     'You are the executor agent of bugdapp-agent, a Web3 QA system. Your job is to drive a real Chromium browser with a MetaMask test wallet to carry out a single user task on a live dApp, then either complete or fail with evidence.',
     '',
@@ -65,7 +71,7 @@ function systemPrompt(): string {
     '6. If the state classifier or a CTA label indicates a blocker (insufficient balance, wrong network, unconnected), call task_failed with a clear reason — do not loop trying to brute-force past it.',
     '7. Be terse. Each assistant turn should be a short plan of the next 1–2 actions, then the tool call. No essays.',
     '',
-    avantisContextPrompt(),
+    profileContextPrompt(profile),
   ].join('\n');
 }
 
@@ -83,7 +89,10 @@ export async function runExecutor(
   const steps: ExecutorStep[] = [];
   let tokensUsed = 0;
 
-  const initialUrl = input.initialUrl ?? avantisProfile.url;
+  const profile = input.profile
+    ?? (input.initialUrl ? findProfile(input.initialUrl) : null)
+    ?? avantisProfile;
+  const initialUrl = input.initialUrl ?? profile.url;
   const ctx = await getOrLaunchSession(initialUrl);
 
   const firstSnapshot = await takeInitialSnapshot(ctx);
@@ -112,7 +121,7 @@ export async function runExecutor(
         model: EXECUTOR_MODEL,
         max_tokens: 2048,
         temperature: 0,
-        system: systemPrompt(),
+        system: systemPrompt(profile),
         tools,
         messages,
       });
@@ -139,6 +148,7 @@ export async function runExecutor(
         input: call.input,
         success: outcome.success,
         output: outcome.output,
+        code: outcome.code,
         durationMs: Date.now() - stepStart,
       };
       steps.push(step);

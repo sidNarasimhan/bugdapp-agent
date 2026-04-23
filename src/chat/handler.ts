@@ -12,11 +12,13 @@
  *     → act mode:  run executor agent (act-observe loop)
  *     → on failure: file Notion page with step trace
  */
+import { join } from 'path';
 import { fileFinding, notionConfigured, fileAgentFinding } from '../integrations/notion.js';
 import { setPending, getPending, clearPending, classifyReply, key as pendingKey, type Pending, type PendingInput } from './approvals.js';
 import { parseIntent, listFlowsReply, helpReply } from './nl-agent.js';
 import { matchTaskToSpec } from './agent/spec-matcher.js';
 import { runExecutor, type ExecutorResult, type ExecutorStep } from './agent/executor.js';
+import { healSpec, type HealResult } from './agent/spec-healer.js';
 import { runDApp, formatSummary, type RunResult } from './dispatcher.js';
 import { avantisProfile } from '../agent/profiles/avantis.js';
 
@@ -118,10 +120,10 @@ async function executeSpec(p: Extract<Pending, { kind: 'spec' }>, io: ReplyFns):
       const chunk = progressBuf.splice(0, progressBuf.length).join('\n').slice(0, 1800);
       if (io.progress) await io.progress('```\n' + chunk + '\n```');
     };
-    // dispatcher runs full matched specs — we pre-set a grep env so only the matched file runs.
     process.env.PLAYWRIGHT_GREP_FILES = `tests/${p.specFile}`;
+    let result: RunResult;
     try {
-      const result = await runDApp(avantisProfile, 'all', (line) => {
+      result = await runDApp(avantisProfile, 'all', (line) => {
         progressBuf.push(line);
         const now = Date.now();
         if (now - lastEmit > 3500 || progressBuf.join('\n').length > 1500) {
@@ -130,14 +132,55 @@ async function executeSpec(p: Extract<Pending, { kind: 'spec' }>, io: ReplyFns):
         }
       });
       await flush();
-      await io.reply(formatSummary(result));
-      await maybeFileSpecFindings(result, p.task, io);
     } finally {
       delete process.env.PLAYWRIGHT_GREP_FILES;
     }
+    await io.reply(formatSummary(result));
+
+    // Spec passed — done, no healing needed
+    if (result.summary.failures.length === 0) {
+      return;
+    }
+
+    // Spec failed — cascade to act mode + try to heal the file
+    await io.reply(
+      `↺ Spec failed. Cascading to act-mode agent to recover + heal the file so next run is cheap Playwright.`,
+    );
+    const actResult = await runExecutor({ task: p.task }, async () => {});
+
+    if (actResult.outcome === 'complete') {
+      await io.reply(
+        `✅ Agent recovered. ${actResult.steps.length} steps, ${(actResult.durationMs / 1000).toFixed(1)}s, ~${Math.round(actResult.tokensUsed / 1000)}k tok.\n` +
+        `${actResult.summary}\n\n` +
+        `Attempting to heal \`${p.specFile}\`...`,
+      );
+      const heal = await healSpecFile(p.specFile, result.summary.failures[0]?.title ?? p.task, actResult.steps);
+      if (heal.ok) {
+        await io.reply(
+          `🔧 Healed \`${p.specFile}\` — injected ${heal.linesInjected} lines into test "${heal.replacedTestTitle}".\n` +
+          `Backup: \`${heal.backupPath}\`\n` +
+          `Next run of this spec will be pure Playwright (no LLM cost).`,
+        );
+      } else {
+        await io.reply(`⚠️  Heal failed: ${heal.reason}`);
+      }
+    } else {
+      await io.reply(
+        `❌ Agent also failed (${actResult.outcome}). Real bug, filing to Notion.\n` +
+        `${actResult.summary}${actResult.terminalState ? ` · state: \`${actResult.terminalState}\`` : ''}`,
+      );
+      await maybeFileActFinding(actResult, p.task, io);
+    }
+
+    await maybeFileSpecFindings(result, p.task, io);
   } finally {
     activeRuns.delete(name);
   }
+}
+
+async function healSpecFile(specFile: string, failingTestTitle: string, steps: ExecutorStep[]): Promise<HealResult> {
+  const specPath = join(process.cwd(), 'output', 'developer-avantisfi-com', 'tests', specFile);
+  return healSpec(specPath, failingTestTitle, steps);
 }
 
 async function executeAct(p: Extract<Pending, { kind: 'act' }>, io: ReplyFns): Promise<void> {
