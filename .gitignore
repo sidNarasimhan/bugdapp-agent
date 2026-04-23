@@ -38,3 +38,9 @@ playwright/.cache/
 *.db
 *.db-shm
 *.db-wal
+
+# Persistent Chromium profile (MM state, cookies, etc — each machine builds its own)
+.chromium-profile/
+
+# Smoke / throwaway scripts
+scripts/_smoke-*.ts
