@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>bugdapp — finding viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0b0e14;
+      --panel: #121620;
+      --panel-alt: #181d2a;
+      --border: #1f2636;
+      --text: #e3e8f0;
+      --muted: #8592a8;
+      --accent: #8cc4ff;
+      --ok: #58d07d;
+      --warn: #f2c14e;
+      --err: #ff6b6b;
+      --crit: #ff3fc9;
+      --mono: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; }
+    body { min-height: 100vh; }
+    header { padding: 18px 26px; border-bottom: 1px solid var(--border); background: var(--panel); display: flex; flex-wrap: wrap; align-items: baseline; gap: 14px; }
+    header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+    header .sev { text-transform: uppercase; font-size: 11px; font-weight: 700; letter-spacing: .05em; padding: 3px 8px; border-radius: 4px; }
+    .sev-info { background: #1b2a3d; color: var(--accent); }
+    .sev-warn { background: #3a2d10; color: var(--warn); }
+    .sev-error { background: #401919; color: var(--err); }
+    .sev-critical { background: #3a0b30; color: var(--crit); }
+    header .meta { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+    main { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 0; min-height: calc(100vh - 70px); }
+    .left, .right { padding: 22px 26px; overflow: auto; }
+    .right { border-left: 1px solid var(--border); background: var(--panel); }
+    h2 { margin: 22px 0 10px; font-size: 14px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+    h2:first-of-type { margin-top: 0; }
+    .summary { font-size: 15px; line-height: 1.55; white-space: pre-wrap; color: var(--text); }
+    .tabs { display: flex; gap: 0; margin-top: 18px; border-bottom: 1px solid var(--border); }
+    .tab { padding: 10px 16px; cursor: pointer; font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent; user-select: none; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-body { padding: 16px 0; }
+    .receipt { border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; margin-bottom: 10px; background: var(--panel-alt); }
+    .receipt .hash { font-family: var(--mono); font-size: 12px; color: var(--accent); word-break: break-all; }
+    .receipt .kv { display: grid; grid-template-columns: 90px 1fr; gap: 4px 10px; margin-top: 6px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+    .receipt .events { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+    .evt { font-family: var(--mono); font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+    .evt .name { color: var(--ok); }
+    .evt .args { color: var(--muted); word-break: break-all; }
+    .assertions { display: flex; flex-direction: column; gap: 6px; }
+    .assertion { display: grid; grid-template-columns: 24px 60px minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 12px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; }
+    .assertion.passed { border-color: #224934; }
+    .assertion.failed { border-color: #562424; }
+    .assertion .mark { font-weight: 700; }
+    .assertion .mark.ok { color: var(--ok); }
+    .assertion .mark.bad { color: var(--err); }
+    .assertion .sev { font-size: 10px; padding: 2px 5px; border-radius: 3px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; height: fit-content; }
+    .assertion .body { min-width: 0; }
+    .assertion .id { font-family: var(--mono); font-size: 11px; color: var(--accent); display: block; }
+    .assertion .detail { color: var(--text); font-size: 13px; margin-top: 2px; }
+    .repro { background: #000; color: #b0d8ff; font-family: var(--mono); font-size: 12px; padding: 12px 14px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; border: 1px solid var(--border); }
+    .kv-block { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 14px; font-size: 13px; }
+    .kv-block .k { color: var(--muted); }
+    .kv-block .v { font-family: var(--mono); color: var(--text); word-break: break-all; }
+    .load-hint { padding: 24px 26px; font-size: 14px; color: var(--muted); }
+    .load-hint code { background: var(--panel-alt); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); color: var(--text); }
+    .section-empty { color: var(--muted); font-style: italic; font-size: 13px; }
+    .file-input { display: block; margin-top: 12px; }
+    .file-input input { padding: 6px 10px; background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; font-family: var(--mono); }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+      .right { border-left: none; border-top: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <header id="hdr">
+    <h1 id="title">bugdapp finding viewer</h1>
+    <span id="sev" class="sev sev-info">—</span>
+    <span id="meta" class="meta"></span>
+  </header>
+
+  <div id="loadHint" class="load-hint">
+    <p>Open <code>finding.json</code> from this folder.</p>
+    <p>This viewer is static — no server required. It reads the same <code>finding.json</code> that the bugdapp findings reporter writes.</p>
+    <div class="file-input">
+      <input type="file" id="fileInput" accept="application/json" />
+    </div>
+  </div>
+
+  <main id="main" style="display:none;">
+    <section class="left">
+      <h2>Summary</h2>
+      <div class="summary" id="summary"></div>
+      <div class="tabs" id="tabs">
+        <div class="tab active" data-tab="receipts">On-chain</div>
+        <div class="tab" data-tab="assertions">Assertions</div>
+        <div class="tab" data-tab="context">Context</div>
+      </div>
+      <div class="tab-body" id="tabBody"></div>
+    </section>
+    <section class="right">
+      <h2>Reproduce</h2>
+      <pre class="repro" id="repro"></pre>
+      <h2>Source</h2>
+      <div class="kv-block" id="sourceBlock"></div>
+      <h2>Artifacts</h2>
+      <div id="artifacts"></div>
+    </section>
+  </main>
+
+  <script>
+    const el = id => document.getElementById(id);
+    const sevClass = s => ({info:'sev-info',warn:'sev-warn',error:'sev-error',critical:'sev-critical'})[s] || 'sev-info';
+
+    function renderReceipts(receipts) {
+      if (!receipts || receipts.length === 0) {
+        return '<div class="section-empty">No on-chain transactions were captured for this test.</div>';
+      }
+      return receipts.map(r => {
+        const events = (r.events || []).map(e =>
+          `<div class="evt"><span class="name">${esc(e.name)}</span><span class="args">(${esc(JSON.stringify(e.args))}) @ ${esc(e.address)}</span></div>`
+        ).join('');
+        return `<div class="receipt">
+          <div class="hash">${esc(r.hash)}</div>
+          <div class="kv">
+            <div>status</div><div>${esc(r.status)}</div>
+            <div>block</div><div>${esc(String(r.blockNumber))}</div>
+            <div>gas</div><div>${esc(String(r.gasUsed))}</div>
+            <div>from</div><div>${esc(r.from)}</div>
+            <div>to</div><div>${esc(r.to || '(contract creation)')}</div>
+          </div>
+          <div class="events">${events || '<div class="section-empty">No decodable events.</div>'}</div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderAssertions(assertions) {
+      if (!assertions || assertions.length === 0) return '<div class="section-empty">No assertions were run.</div>';
+      const items = assertions.map(a => {
+        const cls = a.passed ? 'passed' : 'failed';
+        const mark = a.passed ? '<span class="mark ok">✓</span>' : '<span class="mark bad">✗</span>';
+        return `<div class="assertion ${cls}">
+          ${mark}
+          <span class="sev ${sevClass(a.severity)}">${esc(a.severity)}</span>
+          <div class="body">
+            <span class="id">${esc(a.id)}</span>
+            <div class="detail">${esc(a.detail || '')}</div>
+          </div>
+        </div>`;
+      }).join('');
+      return `<div class="assertions">${items}</div>`;
+    }
+
+    function renderContext(f) {
+      return `<div class="kv-block">
+        <div class="k">test</div><div class="v">${esc(f.context.testTitle)}</div>
+        <div class="k">flow</div><div class="v">${esc(f.context.flowId || '(unknown)')}</div>
+        <div class="k">spec</div><div class="v">${esc(f.context.specFile)}</div>
+        <div class="k">ran at</div><div class="v">${esc(f.context.ranAt)}</div>
+      </div>`;
+    }
+
+    function renderSource(f) {
+      return `<div class="k">dApp</div><div class="v">${esc(f.source.dapp)}</div>
+        <div class="k">url</div><div class="v">${esc(f.source.url)}</div>
+        <div class="k">archetype</div><div class="v">${esc(f.source.archetype)}</div>
+        <div class="k">chain</div><div class="v">${esc(String(f.source.chainId))}</div>
+        <div class="k">wallet</div><div class="v">${esc(f.source.wallet)}</div>`;
+    }
+
+    function renderArtifacts(f) {
+      const a = f.artifacts || {};
+      const items = [];
+      if (a.tracePath) items.push('<div><code>trace.zip</code> — open with <code>npx playwright show-trace ./trace.zip</code></div>');
+      if (a.screencastPath) items.push('<div><code>screencast.json</code> — CDP screencast manifest written by wallet.fixture</div>');
+      if (items.length === 0) return '<div class="section-empty">No artifacts attached.</div>';
+      return items.join('');
+    }
+
+    function esc(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function render(f) {
+      el('loadHint').style.display = 'none';
+      el('main').style.display = '';
+      el('title').textContent = f.title;
+      el('sev').className = 'sev ' + sevClass(f.severity);
+      el('sev').textContent = f.severity;
+      el('meta').textContent = [f.source.dapp, f.source.archetype, 'chain ' + f.source.chainId, f.createdAt].join(' · ');
+      el('summary').textContent = f.summary;
+      el('repro').textContent = f.repro;
+      el('sourceBlock').innerHTML = renderSource(f);
+      el('artifacts').innerHTML = renderArtifacts(f);
+      const bodies = {
+        receipts: renderReceipts(f.verification && f.verification.receipts),
+        assertions: renderAssertions(f.verification && f.verification.assertions),
+        context: renderContext(f),
+      };
+      const tabs = document.querySelectorAll('.tab');
+      const tabBody = el('tabBody');
+      const activate = key => {
+        tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === key));
+        tabBody.innerHTML = bodies[key];
+      };
+      tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.tab)));
+      activate('receipts');
+    }
+
+    async function tryAutoLoad() {
+      try {
+        const res = await fetch('./finding.json');
+        if (!res.ok) throw new Error('no finding.json next to viewer');
+        const f = await res.json();
+        render(f);
+      } catch { /* fall through to manual load */ }
+    }
+
+    el('fileInput').addEventListener('change', async ev => {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const text = await file.text();
+      try { render(JSON.parse(text)); }
+      catch (e) { alert('not a valid finding.json: ' + e.message); }
+    });
+
+    tryAutoLoad();
+  </script>
+</body>
+</html>
