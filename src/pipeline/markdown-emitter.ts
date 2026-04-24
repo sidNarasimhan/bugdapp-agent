@@ -62,25 +62,25 @@ export function createMarkdownEmitterNode() {
 // ── index.md ────────────────────────────────────────────────────────────
 
 function emitIndex(dAppName: string, url: string, modules: DAppModule[]): string {
+  // Keep tight: dApp id + module slug table. Module detail lives in each module's
+  // own .md, loaded via RAG when the agent operates on it.
   const lines: string[] = [];
-  lines.push(`# ${dAppName}`);
+  lines.push(`# ${dAppName} — module map`);
   lines.push('');
-  lines.push(`URL: ${url}`);
-  lines.push('');
-  lines.push(`This index lists the business modules identified for this dApp. Load a specific module's file (by slug below) when operating on it. This file itself should be loaded once at session start as a map of the dApp.`);
-  lines.push('');
-  lines.push('## Modules');
+  lines.push(`Call \`get_module_context\` with a slug below to load full module detail.`);
   lines.push('');
   for (const m of modules) {
     const slug = m.id.replace(/^module:/, '').replace(/:/g, '.');
-    lines.push(`### ${m.name}  \`${slug}.md\``);
-    lines.push(`- Archetype: ${m.archetype ?? 'general'}`);
-    lines.push(`- Purpose: ${m.businessPurpose || m.description}`);
-    if (m.pageIds.length) lines.push(`- Pages: ${m.pageIds.join(', ')}`);
+    const arch = m.archetype && m.archetype !== 'general' ? ` [${m.archetype}]` : '';
+    const pages = m.pageIds.length ? ` · ${m.pageIds.map(p => p.replace(/^page:/, '')).join(',')}` : '';
+    lines.push(`- \`${slug}\` — **${m.name}**${arch}${pages}`);
     if (m.subModules && m.subModules.length > 0) {
-      lines.push(`- Sub-modules: ${m.subModules.map(s => s.name).join(', ')}`);
+      for (const sm of m.subModules) {
+        const smSlug = sm.id.replace(/^module:/, '').replace(/:/g, '.');
+        const smArch = sm.archetype && sm.archetype !== 'general' ? ` [${sm.archetype}]` : '';
+        lines.push(`  - \`${smSlug}\` — ${sm.name}${smArch}`);
+      }
     }
-    lines.push('');
   }
   return lines.join('\n');
 }

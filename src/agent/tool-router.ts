@@ -14,6 +14,7 @@ import { browserToolDefs, executeBrowserTool } from '../core/browser-tools.js';
 import { walletToolDefs, executeWalletTool } from '../core/wallet-tools.js';
 import { fetchAndDecodeReceipt } from '../chain/receipt.js';
 import { activeDApp } from '../config.js';
+import { resolveModuleContext, listModules } from './knowledge.js';
 
 export const agentControlTools: ToolDefinition[] = [
   {
@@ -44,6 +45,19 @@ export const agentControlTools: ToolDefinition[] = [
         },
       },
       required: ['reason'],
+    },
+  },
+  {
+    name: 'get_module_context',
+    description:
+      'Load a specific dApp module\'s detailed knowledge (components, entry points, constraints, docs, observed rules). Call this BEFORE operating on a module you haven\'t interacted with yet in this session. Provide at least one of: page_url (e.g. "/trade"), module_name (e.g. "Zero-Fee Perps"), or slug (e.g. "trade.zfp"). Returns ~1-3KB of markdown.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        page_url: { type: 'string', description: 'URL or path hint — e.g. "/trade" or the full URL' },
+        module_name: { type: 'string', description: 'Human name — e.g. "Zero-Fee Perps"' },
+        slug: { type: 'string', description: 'Slug from the overview — e.g. "trade.zfp"' },
+      },
     },
   },
   {
@@ -106,6 +120,28 @@ export async function routeToolCall(
     };
   }
 
+  if (name === 'get_module_context') {
+    const hint = {
+      page_url: typeof input.page_url === 'string' ? input.page_url : undefined,
+      module_name: typeof input.module_name === 'string' ? input.module_name : undefined,
+      slug: typeof input.slug === 'string' ? input.slug : undefined,
+    };
+    const hit = resolveModuleContext(hint, activeDApp());
+    if (!hit) {
+      const available = listModules().map(m => `${m.slug} (${m.name})`).join(', ');
+      return {
+        success: false,
+        output: `No module matched hint ${JSON.stringify(hint)}. Available modules: ${available || '(none — modules.json missing)'}`,
+        toolName: name,
+      };
+    }
+    return {
+      success: true,
+      output: `# Module: ${hit.moduleName} (${hit.slug}, ${hit.bytes}B)\n\n${hit.content}`,
+      toolName: name,
+    };
+  }
+
   if (name === 'wallet_verify_tx') {
     const txHash = String(input.tx_hash ?? '').trim();
     if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
@@ -150,7 +186,21 @@ export async function routeToolCall(
     const refInfo = typeof input.ref === 'string' ? ctx.snapshotRefs.get(input.ref) : undefined;
     const res = await executeBrowserTool(name, input, ctx);
     const code = res.success ? buildBrowserCode(name, input, refInfo) : undefined;
-    return { ...res, toolName: name, code };
+
+    // Auto-inject module context after a successful navigate — RAG retrieval
+    // without a separate tool call. The agent sees the new module's .md in the
+    // next observation alongside "Navigated to …" output.
+    let output = res.output;
+    if (name === 'browser_navigate' && res.success) {
+      const urlHint = typeof input.url === 'string' ? input.url : undefined;
+      if (urlHint) {
+        const hit = resolveModuleContext({ page_url: urlHint }, activeDApp());
+        if (hit) {
+          output = `${res.output}\n\n[RAG auto-injected module: ${hit.moduleName} (${hit.slug})]\n\n${hit.content}`;
+        }
+      }
+    }
+    return { ...res, output, toolName: name, code };
   }
   if (name.startsWith('wallet_')) {
     const res = await executeWalletTool(name, input, ctx);

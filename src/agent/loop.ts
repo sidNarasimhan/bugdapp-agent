@@ -13,7 +13,7 @@
 import { createOpenRouterClient, type MessageParam, type ContentBlock } from '../core/llm.js';
 import { routeToolCall, allToolDefs } from './tool-router.js';
 import { dAppContextPrompt } from './prompts.js';
-import { loadKnowledge, knowledgeBlock } from './knowledge.js';
+import { thinKnowledge, contextForUrl } from './knowledge.js';
 import { getOrLaunchSession, installExitHooks } from './session.js';
 import { activeDApp, type ActiveDApp } from '../config.js';
 import type { BrowserCtx } from '../types.js';
@@ -55,26 +55,26 @@ export interface ExecutorResult {
 
 export type StepListener = (step: ExecutorStep) => void | Promise<void>;
 
-function systemPrompt(dapp: ActiveDApp, knowledge: string): string {
+function systemPrompt(dapp: ActiveDApp, overview: string): string {
   return [
     'You are the executor agent of bugdapp-agent, a Web3 QA system. Your job is to drive a real Chromium browser with a MetaMask test wallet to carry out a single user task on a live dApp, then either complete or fail with evidence.',
     '',
-    'You have browser tools (browser_*), wallet tools (wallet_*), and control tools (task_complete, task_failed).',
+    'You have browser tools (browser_*), wallet tools (wallet_*), and control tools (task_complete, task_failed). The dApp knowledge is organized into modules — `get_module_context` retrieves a module\'s detailed doc on demand; the initial overview below lists all modules.',
     '',
     'Operating rules:',
     '1. Always call browser_snapshot at the start and after any navigation or major state change — the snapshot returns element refs (e.g. [ref=e5]) that subsequent browser_click / browser_type calls consume.',
     '2. Prefer clicking by ref from a fresh snapshot over typing selectors.',
     '3. Wallet popups: after any action that triggers MetaMask (connect / sign / send tx / switch network), call the matching wallet_* tool to approve or reject. Do not expect the browser to auto-dismiss MM.',
-    '4. If a click should produce a tx, wait for confirmation before calling task_complete. The UI usually shows a toast or pending state. If a tx hash is visible, include it in the task_complete payload.',
+    '4. If a click should produce a tx, wait for confirmation. If a tx hash is visible, capture it for wallet_verify_tx.',
     '5. Never invent refs. If a ref from an earlier snapshot is stale (page changed), take a new snapshot.',
     '6. If the state classifier or a CTA label indicates a blocker (insufficient balance, wrong network, unconnected), call task_failed with a clear reason — do not loop trying to brute-force past it.',
     '7. Be terse. Each assistant turn should be a short plan of the next 1–2 actions, then the tool call. No essays.',
-    '8. The KNOWLEDGE block below comes from the crawler + comprehension pass. Trust it over your own assumptions — it reflects what the dApp\'s real UI + docs say. If a constraint contradicts the user\'s task, surface the conflict via task_failed rather than brute-forcing.',
-    '9. ON-CHAIN VERIFICATION — REQUIRED when a transaction was submitted: after wallet_confirm_transaction, capture the tx hash from the UI (toast, portfolio entry, etherscan link). Then call wallet_verify_tx with that hash. Only call task_complete after you see status:"success" AND at least one meaningful event (e.g. PositionOpened, Transfer, Swap). If status:"reverted" or the expected event is missing, call task_failed with the decoded revert reason.',
+    '8. Module context: when operating on a module for the first time, call `get_module_context` to load its .md with components/docs/constraints/entry points. The module markdown is ground truth — trust it over assumptions. After browser_navigate, module context for the new URL is auto-injected in the next observation.',
+    '9. ON-CHAIN VERIFICATION — REQUIRED when a transaction was submitted: after wallet_confirm_transaction, capture the tx hash from the UI. Then call wallet_verify_tx with that hash. Only call task_complete after you see status:"success" AND a meaningful event (e.g. PositionOpened, Transfer, Swap). If reverted or expected event missing, task_failed with decoded reason.',
     '',
     dAppContextPrompt(dapp),
     '',
-    knowledge,
+    overview,
   ].filter(Boolean).join('\n');
 }
 
@@ -94,7 +94,8 @@ export async function runExecutor(
 
   const dapp = input.dapp ?? activeDApp();
   const initialUrl = input.initialUrl ?? dapp.url;
-  const knowledge = knowledgeBlock(loadKnowledge(initialUrl));
+  const { overview } = thinKnowledge(dapp);
+  const initialContext = contextForUrl(initialUrl, dapp);
   const ctx = await getOrLaunchSession(initialUrl);
 
   const firstSnapshot = await takeInitialSnapshot(ctx);
@@ -102,10 +103,18 @@ export async function runExecutor(
   const client = createOpenRouterClient(process.env.OPENROUTER_API_KEY);
   const tools = allToolDefs();
 
+  // Bootstrap the first user turn with: task + any module .md(s) whose pages match
+  // the landing URL + the DOM snapshot. This seeds the agent with relevant RAG
+  // context without paying for it every turn.
+  const initialModuleBlock = initialContext.length > 0
+    ? '\n\n# CURRENT PAGE MODULE CONTEXT (RAG-retrieved)\n' +
+      initialContext.map(c => `## Module: ${c.moduleName}\n\n${c.content}`).join('\n\n---\n\n')
+    : '';
+
   const messages: MessageParam[] = [
     {
       role: 'user',
-      content: `TASK: ${input.task}\n\nCurrent page state:\n${truncate(firstSnapshot, 3000)}\n\nProceed.`,
+      content: `TASK: ${input.task}${initialModuleBlock}\n\n# CURRENT PAGE SNAPSHOT\n${truncate(firstSnapshot, 3000)}\n\nProceed.`,
     },
   ];
 
@@ -123,7 +132,7 @@ export async function runExecutor(
         model: EXECUTOR_MODEL,
         max_tokens: 2048,
         temperature: 0,
-        system: systemPrompt(dapp, knowledge),
+        system: systemPrompt(dapp, overview),
         tools,
         messages,
       });
