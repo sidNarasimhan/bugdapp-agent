@@ -48,6 +48,10 @@ export interface ExecutorResult {
   txHash?: string;
   steps: ExecutorStep[];
   tokensUsed: number;
+  /** Tokens read from Anthropic's ephemeral cache (cheap). */
+  cacheReadTokens: number;
+  /** Tokens written into the cache on first use (one-time cost). */
+  cacheCreationTokens: number;
   durationMs: number;
   model: string;
   abortReason?: 'max_iterations' | 'max_tokens' | 'max_wall_time' | 'error';
@@ -55,8 +59,15 @@ export interface ExecutorResult {
 
 export type StepListener = (step: ExecutorStep) => void | Promise<void>;
 
-function systemPrompt(dapp: ActiveDApp, overview: string): string {
-  return [
+/**
+ * System prompt is returned as an array of text blocks so we can mark the
+ * stable portion (rules + profile + overview) as cacheable. The agent-loop
+ * sends these through OpenRouter → Anthropic with `cache_control: ephemeral`
+ * so subsequent turns pay cache-read rates instead of full input rates (5-10x
+ * cost reduction on repeated system prompts per Anthropic's published numbers).
+ */
+function systemPromptBlocks(dapp: ActiveDApp, overview: string): Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> {
+  const rules = [
     'You are the executor agent of bugdapp-agent, a Web3 QA system. Your job is to drive a real Chromium browser with a MetaMask test wallet to carry out a single user task on a live dApp, then either complete or fail with evidence.',
     '',
     'You have browser tools (browser_*), wallet tools (wallet_*), and control tools (task_complete, task_failed). The dApp knowledge is organized into modules — `get_module_context` retrieves a module\'s detailed doc on demand; the initial overview below lists all modules.',
@@ -75,7 +86,8 @@ function systemPrompt(dapp: ActiveDApp, overview: string): string {
     dAppContextPrompt(dapp),
     '',
     overview,
-  ].filter(Boolean).join('\n');
+  ].join('\n');
+  return [{ type: 'text', text: rules, cache_control: { type: 'ephemeral' } }];
 }
 
 async function takeInitialSnapshot(ctx: BrowserCtx): Promise<string> {
@@ -91,6 +103,8 @@ export async function runExecutor(
   const started = Date.now();
   const steps: ExecutorStep[] = [];
   let tokensUsed = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
 
   const dapp = input.dapp ?? activeDApp();
   const initialUrl = input.initialUrl ?? dapp.url;
@@ -132,7 +146,7 @@ export async function runExecutor(
         model: EXECUTOR_MODEL,
         max_tokens: 2048,
         temperature: 0,
-        system: systemPrompt(dapp, overview),
+        system: systemPromptBlocks(dapp, overview),
         tools,
         messages,
       });
@@ -141,6 +155,8 @@ export async function runExecutor(
     }
 
     tokensUsed += (resp.usage?.input_tokens ?? 0) + (resp.usage?.output_tokens ?? 0);
+    cacheReadTokens += resp.usage?.cache_read_input_tokens ?? 0;
+    cacheCreationTokens += resp.usage?.cache_creation_input_tokens ?? 0;
 
     messages.push({ role: 'assistant', content: resp.content });
 
@@ -197,7 +213,7 @@ export async function runExecutor(
   ): ExecutorResult {
     return {
       outcome, summary, abortReason, terminalState, txHash,
-      steps, tokensUsed,
+      steps, tokensUsed, cacheReadTokens, cacheCreationTokens,
       durationMs: Date.now() - started,
       model: EXECUTOR_MODEL,
     };

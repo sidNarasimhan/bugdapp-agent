@@ -70,9 +70,18 @@ export class OpenRouterClient {
     create: async (params: MessageCreateParams): Promise<MessageResponse> => {
       const openaiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
-      const systemText = this.extractSystemPrompt(params.system);
-      if (systemText) {
-        openaiMessages.push({ role: 'system', content: systemText });
+      // System prompt. If caller passed an array of text blocks (with optional
+      // cache_control markers), forward them as content blocks so OpenRouter
+      // translates to Anthropic ephemeral cache. Otherwise plain string.
+      if (Array.isArray(params.system)) {
+        const blocks = params.system.map(s => ({
+          type: 'text' as const,
+          text: s.text,
+          ...(s.cache_control ? { cache_control: s.cache_control } : {}),
+        }));
+        openaiMessages.push({ role: 'system', content: blocks as any });
+      } else if (typeof params.system === 'string' && params.system) {
+        openaiMessages.push({ role: 'system', content: params.system });
       }
 
       for (const msg of params.messages) {
@@ -222,12 +231,21 @@ export class OpenRouterClient {
       stop_reason = content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn';
     }
 
+    // OpenRouter forwards Anthropic cache metrics via non-standard usage fields.
+    // Different provider routes may surface them under different names; we probe
+    // the common ones and default to 0.
+    const u = response.usage as any;
+    const cacheRead = u?.cache_read_input_tokens ?? u?.prompt_tokens_details?.cached_tokens ?? 0;
+    const cacheCreation = u?.cache_creation_input_tokens ?? 0;
+
     return {
       content,
       stop_reason,
       usage: {
-        input_tokens: response.usage?.prompt_tokens || 0,
-        output_tokens: response.usage?.completion_tokens || 0,
+        input_tokens: u?.prompt_tokens || 0,
+        output_tokens: u?.completion_tokens || 0,
+        cache_read_input_tokens: cacheRead,
+        cache_creation_input_tokens: cacheCreation,
       },
     };
   }
