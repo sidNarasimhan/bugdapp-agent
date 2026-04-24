@@ -492,7 +492,20 @@ export function createComprehensionSpecGenNode() {
 
     // ── NEW PATH: module-by-module spec gen from flows-by-persona.json ──
     // Triggered when persona-mapper has run (state.userFlows populated).
-    // Old flat combinatorial specs move to tests/_legacy/ on first new-path run.
+    // Also hydrates from disk if state is empty but cached files exist
+    // (happens when --skip-persona + --skip-segment re-runs downstream only).
+    if (!state.userFlows || state.userFlows.length === 0) {
+      const flowsPath = join(config.outputDir, 'flows-by-persona.json');
+      if (existsSync(flowsPath)) {
+        try { state.userFlows = JSON.parse(readFileSync(flowsPath, 'utf-8')); } catch {}
+      }
+    }
+    if (!state.modules || state.modules.length === 0) {
+      const modulesPath = join(config.outputDir, 'modules.json');
+      if (existsSync(modulesPath)) {
+        try { state.modules = JSON.parse(readFileSync(modulesPath, 'utf-8')); } catch {}
+      }
+    }
     if (state.userFlows && state.userFlows.length > 0 && state.modules && state.modules.length > 0) {
       console.log(`[ComprehensionSpecGen] using module-by-module path (${state.userFlows.length} flows)`);
       moveLegacySpecs(testsDir);

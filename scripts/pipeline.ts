@@ -126,19 +126,29 @@ async function main() {
     Object.assign(state, await md(state));
   }
 
-  // Phase 6 — Explorer (agent-driven enrichment)
+  // Phase 6 — Explorer (agent-driven, module-by-module KG enrichment)
   if (!flag('skip-explore') && !flag('skip-explorer')) {
-    console.log('\n━━━ Phase 6: Explorer (agent-driven) ━━━');
+    console.log('\n━━━ Phase 6: Explorer (agent-driven, per module) ━━━');
     const { explore } = await import('../src/pipeline/explorer.js');
     const out = await explore();
-    console.log(`[explorer] ${out.outcome} · ${out.observations.length} observations · ${(out.durationMs/1000).toFixed(1)}s`);
+    console.log(`[explorer] ${out.modulesExplored} modules explored · ${(out.totalDurationMs/1000).toFixed(1)}s · ${Math.round(out.totalTokens/1000)}k tok`);
   } else {
     console.log('[pipeline] skipping explore');
   }
 
-  // Phase 7 — Spec Gen (no LLM, deterministic)
+  // Phase 7 — Persona Mapper (LLM) — per-module user flows grouped by persona
+  if (!flag('skip-persona')) {
+    console.log('\n━━━ Phase 7: Persona Mapper ━━━');
+    const { createPersonaMapperNode } = await import('../src/pipeline/persona-mapper.js');
+    const pm = createPersonaMapperNode();
+    Object.assign(state, await pm(state));
+  } else {
+    console.log('[pipeline] skipping persona-mapper — reusing cached flows-by-persona.json');
+  }
+
+  // Phase 8 — Spec Gen (no LLM, deterministic)
   if (!flag('skip-specgen')) {
-    console.log('\n━━━ Phase 7: Spec Generator ━━━');
+    console.log('\n━━━ Phase 8: Spec Generator ━━━');
     const sg = createComprehensionSpecGenNode();
     Object.assign(state, await sg(state));
   } else {
