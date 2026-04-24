@@ -23,8 +23,10 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { AgentStateType, Capability, Control, DAppModule } from '../agent/state.js';
 
-const MAX_VARIANTS_PER_SUBMIT = 8;
-const MAX_OPTIONS_EXPANSION_PER_CONTROL = 3;  // tabs/radio: enumerate all; large sets: top-3
+const MAX_VARIANTS_PER_SUBMIT = 48;  // bigger budget — real trade forms have 5-6 binary/ternary axes
+const MAX_OPTIONS_SMALL = 3;         // picker with 3 options → expand all
+const MAX_OPTIONS_MEDIUM = 5;        // percentage-picker 5 options → keep all
+const MAX_OPTIONS_LARGE_MODAL = 2;   // modal-selector with many pairs → pick 2 canonical (first two)
 
 export function createCapabilityDerivationNode() {
   return async (state: AgentStateType): Promise<Partial<AgentStateType>> => {
@@ -64,9 +66,9 @@ export function createCapabilityDerivationNode() {
       // Split into config controls (before submit) and submit
       const configControls = ordered.filter(c => c.kind !== 'submit-cta' && c.id !== submit.id);
 
-      // Enumerate variants
+      // Enumerate variants; stratified so each axis value appears.
       const variants = enumerateVariants(configControls);
-      const capped = variants.slice(0, MAX_VARIANTS_PER_SUBMIT);
+      const capped = stratifiedCap(variants, MAX_VARIANTS_PER_SUBMIT);
 
       for (let i = 0; i < capped.length; i++) {
         const choices = capped[i];
@@ -98,7 +100,7 @@ export function createCapabilityDerivationNode() {
           personas: [],
           edgeCases: [],  // filled by edge-case-derivation
           archetype: mod.archetype,
-          riskClass: classifyRisk(mod, sameModule),
+          riskClass: classifyRisk(mod, sameModule.concat([submit])),
         });
       }
     }
@@ -192,23 +194,87 @@ function topoSort(controls: Control[], byId: Map<string, Control>): Control[] {
   return out;
 }
 
-/** Enumerate combinations of options across multi-option controls.
- *  Cap each control's options at MAX_OPTIONS_EXPANSION_PER_CONTROL to keep explosion small. */
+/** Enumerate Cartesian product of multi-option axes PLUS toggle axes (on/off).
+ *  Budget per axis is kind-dependent; radios/tabs/toggles expand fully, pickers to 4,
+ *  modal-selectors to 2 canonical pairs. Prioritizes the canonical first option across
+ *  all axes as variant #1, then varies axis-by-axis. */
 function enumerateVariants(controls: Control[]): Record<string, string>[] {
-  const variable = controls.filter(c => Array.isArray(c.options) && c.options.length > 1);
-  if (variable.length === 0) return [{}];
-  const axes: Array<{ id: string; options: string[] }> = variable.map(c => ({
-    id: c.id,
-    options: (c.options ?? []).slice(0, MAX_OPTIONS_EXPANSION_PER_CONTROL),
-  }));
-  const out: Record<string, string>[] = [{}];
+  const axes: Array<{ id: string; options: string[] }> = [];
+  for (const c of controls) {
+    const opts = Array.isArray(c.options) ? c.options : [];
+    const kind = c.kind;
+    if (opts.length > 1) {
+      let cap: number;
+      if (kind === 'radio' || kind === 'tabs' || kind === 'toggle') cap = MAX_OPTIONS_SMALL;
+      else if (kind === 'percentage-picker' || kind === 'dropdown') cap = MAX_OPTIONS_MEDIUM;
+      else if (kind === 'modal-selector') cap = MAX_OPTIONS_LARGE_MODAL;
+      else cap = MAX_OPTIONS_SMALL;
+      axes.push({ id: c.id, options: opts.slice(0, cap) });
+    } else if (kind === 'toggle' && opts.length === 0) {
+      // bare toggle without explicit options: vary on/off
+      axes.push({ id: c.id, options: ['off', 'on'] });
+    }
+  }
+  if (axes.length === 0) return [{}];
+
+  // Full Cartesian
+  let out: Record<string, string>[] = [{}];
   for (const ax of axes) {
     const next: Record<string, string>[] = [];
     for (const combo of out) {
       for (const opt of ax.options) next.push({ ...combo, [ax.id]: opt });
     }
-    out.length = 0;
-    out.push(...next);
+    out = next;
+  }
+  return out;
+}
+
+/** Pick N variants while ensuring every axis value appears at least once if budget allows.
+ *  Algorithm:
+ *   1. Include the canonical (first-option-everywhere) variant.
+ *   2. For each axis and each option, include the "canonical + flip-this-axis-to-option" variant
+ *      if not already taken — guarantees axis-wide coverage in |axes + max options| variants.
+ *   3. Then fill remaining budget by round-robining through the full combo list skipping dupes. */
+function stratifiedCap(all: Record<string, string>[], N: number): Record<string, string>[] {
+  if (all.length <= N) return all;
+  const keyOf = (c: Record<string, string>) => Object.entries(c).sort().map(([k, v]) => `${k}=${v}`).join('|');
+  const pool = all.slice();
+  const out: Record<string, string>[] = [];
+  const seen = new Set<string>();
+  const take = (v: Record<string, string>) => {
+    const k = keyOf(v);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    out.push(v);
+    return true;
+  };
+  // 1) canonical = first combo
+  take(pool[0]);
+  // 2) axis-wise flips (each option of each axis at least once)
+  const axes: Record<string, Set<string>> = {};
+  for (const v of pool) for (const [k, val] of Object.entries(v)) {
+    if (!axes[k]) axes[k] = new Set();
+    axes[k].add(val);
+  }
+  for (const [axis, values] of Object.entries(axes)) {
+    for (const val of values) {
+      if (out.length >= N) return out;
+      // find a variant in pool where this axis=val, prefer minimum diff from canonical
+      const cand = pool.find(v => v[axis] === val && !seen.has(keyOf(v)));
+      if (cand) take(cand);
+    }
+  }
+  // 3) fill by striding through the rest
+  if (out.length < N) {
+    const stride = Math.max(1, Math.floor(pool.length / (N - out.length + 1)));
+    for (let i = 0; i < pool.length && out.length < N; i += stride) {
+      if (!seen.has(keyOf(pool[i]))) take(pool[i]);
+    }
+    // If still short, take anything remaining
+    for (const v of pool) {
+      if (out.length >= N) break;
+      if (!seen.has(keyOf(v))) take(v);
+    }
   }
   return out;
 }

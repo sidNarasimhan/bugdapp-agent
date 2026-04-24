@@ -62,6 +62,9 @@ export function createControlClusteringNode() {
       }
     }
 
+    // Synth sibling options for known patterns where crawl captured only one visible option
+    synthSiblingOptions(allControls, modules);
+
     // Back-fill module.controlIds with the newly created controls
     const byModule = new Map<string, string[]>();
     for (const c of allControls) {
@@ -170,4 +173,54 @@ function validate(raw: any[], m: DAppModule, comps: any[]): Control[] {
 
 function slug(s: string): string {
   return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'control';
+}
+
+/**
+ * When crawler snapshot the DOM, only the currently-active option is visible for radios/tabs/
+ * modal-selectors. Infer the canonical siblings so capability-derivation can explore them.
+ * Purely domain-aware guesses; never invents options for things with already-multiple options.
+ */
+function synthSiblingOptions(controls: Control[], modules: DAppModule[]): void {
+  const moduleById = new Map(modules.map(m => [m.id, m]));
+  for (const c of controls) {
+    if (Array.isArray(c.options) && c.options.length > 1) continue;
+    const existing = (c.options ?? [])[0]?.toLowerCase() ?? '';
+    const name = c.name.toLowerCase();
+    const mod = moduleById.get(c.moduleId);
+    const archetype = mod?.archetype ?? '';
+
+    // Position direction (perps): Long / Short
+    if (c.kind === 'radio' && archetype === 'perps' &&
+        /direction|side|position/.test(name) &&
+        (existing === 'long' || existing === 'short' || existing === '')) {
+      c.options = uniqueKeepFirst(['Long', 'Short'], c.options?.[0]);
+      continue;
+    }
+    // Order type (perps/swap): Market / Limit / Stop
+    if ((c.kind === 'tabs' || c.kind === 'radio') &&
+        (archetype === 'perps' || archetype === 'swap') &&
+        /order|market|limit|type/.test(name)) {
+      c.options = uniqueKeepFirst(['Market', 'Limit', 'Stop'], c.options?.[0]);
+      continue;
+    }
+    // Asset selector (perps/swap): add canonical siblings alongside the detected one
+    if (c.kind === 'modal-selector' && (archetype === 'perps' || archetype === 'swap') &&
+        /asset|pair|token/.test(name) &&
+        (c.options?.length ?? 0) <= 1) {
+      const detected = c.options?.[0];
+      const canon = archetype === 'perps'
+        ? ['BTCUSD', 'ETHUSD', 'SOLUSD']
+        : ['ETH', 'USDC', 'USDT'];
+      c.options = uniqueKeepFirst(canon, detected);
+      continue;
+    }
+  }
+}
+
+function uniqueKeepFirst(canon: string[], detected?: string): string[] {
+  if (!detected) return canon;
+  const d = detected.toUpperCase();
+  const canonUpper = canon.map(x => x.toUpperCase());
+  if (canonUpper.includes(d)) return canon;
+  return [detected, ...canon];
 }

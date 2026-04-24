@@ -118,7 +118,7 @@ async function askNaming(
   };
   const resp = await client.messages.create({
     model: MODEL,
-    max_tokens: 4000,
+    max_tokens: 16000,  // 48+ caps batched per module can easily exceed 4k
     temperature: 0,
     system: SYSTEM,
     messages: [{ role: 'user', content: JSON.stringify(payload) }],
@@ -128,8 +128,16 @@ async function askNaming(
   const body = (fenced ? fenced[1] : text).trim();
   const start = body.indexOf('[');
   const end = body.lastIndexOf(']');
-  if (start < 0 || end <= start) return [];
-  try { return JSON.parse(body.slice(start, end + 1)); } catch { return []; }
+  if (start < 0 || end <= start) {
+    console.warn(`[CapabilityNaming] no JSON array in response (${text.length} chars, stop: ${(resp as any).stop_reason ?? '?'})`);
+    return [];
+  }
+  try {
+    return JSON.parse(body.slice(start, end + 1));
+  } catch (e: any) {
+    console.warn(`[CapabilityNaming] JSON parse failed: ${e?.message ?? e} (body ${end - start + 1} bytes, stop: ${(resp as any).stop_reason ?? '?'})`);
+    return [];
+  }
 }
 
 function mergeNames(raw: any[], caps: Capability[]): void {

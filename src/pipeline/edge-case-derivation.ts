@@ -146,23 +146,35 @@ function parseBounds(name: string, value: string): { min?: number; max?: number;
 
 // ── Applicability ──────────────────────────────────────────────────────
 
+/** Market-level invariants (OI caps, TVL caps, protocol-wide rules) are NOT user-rejectable —
+ *  a user cannot "set OI to 91%". Filter them out. */
+function isMarketInvariant(c: DAppConstraint): boolean {
+  const blob = `${c.name} ${c.value}`.toLowerCase();
+  return /\b(open interest|oi\b|tvl|market[- ]making|total supply|protocol[- ]wide|cap on|system[- ]wide)\b/.test(blob);
+}
+
 function appliesTo(c: DAppConstraint, cap: Capability, byId: Map<string, Control>): boolean {
+  if (isMarketInvariant(c)) return false;
+
   // Explicit link
   if (c.appliesToCapabilityId === cap.id) return true;
   if (c.appliesToModuleId && c.appliesToModuleId === cap.moduleId) return true;
   if (c.appliesToControlId && cap.controlPath.includes(c.appliesToControlId)) return true;
 
-  // Heuristic match: if constraint mentions a control's name or unit used in capability
+  // Heuristic match: constraint must name a concept that matches a user-settable control in path
   const blob = `${c.name} ${c.value}`.toLowerCase();
   for (const cid of cap.controlPath) {
     const ctrl = byId.get(cid);
     if (!ctrl) continue;
+    // Only user-value-bearing controls count for name match
+    const userSettable = ctrl.kind === 'input' || ctrl.kind === 'slider' || ctrl.kind === 'percentage-picker';
+    if (!userSettable) continue;
     if (ctrl.name && blob.includes(ctrl.name.toLowerCase().slice(0, 20))) return true;
     if (ctrl.unit && blob.includes(ctrl.unit.toLowerCase())) return true;
-    if (ctrl.kind === 'slider' && /leverage|rate|%/.test(blob)) return true;
+    if (ctrl.kind === 'slider' && /\bleverage\b|\brate\b/.test(blob)) return true;
   }
-  // Constraints about "position" / "leverage" / "amount" apply to any tx capability
-  if (cap.riskClass !== 'safe' && /position|leverage|collateral|amount|min|max/i.test(c.name)) return true;
+  // Tight keyword match for user-input concepts
+  if (cap.riskClass !== 'safe' && /\b(leverage|collateral|position size|trade size|amount)\b/i.test(c.name)) return true;
   return false;
 }
 
@@ -198,30 +210,54 @@ function generateEdgeCases(c: DAppConstraint, cap: Capability, byId: Map<string,
   return out;
 }
 
+/** Find a control in the capability's path that can legitimately carry a NUMERIC bound
+ *  value. Only value-bearing kinds qualify (input/slider/percentage-picker). Never
+ *  radio/tabs/modal-selector/toggle — those take labels, not numbers. */
 function findTargetControl(c: DAppConstraint, cap: Capability, byId: Map<string, Control>): Control | null {
   if (c.appliesToControlId) {
     const ctrl = byId.get(c.appliesToControlId);
-    if (ctrl) return ctrl;
+    if (ctrl && isValueBearing(ctrl)) return ctrl;
   }
   const blob = `${c.name} ${c.value}`.toLowerCase();
-  // Prefer sliders for leverage-like constraints
-  if (/leverage/i.test(blob)) {
+  // Leverage-like → slider
+  if (/\bleverage\b/.test(blob)) {
     for (const cid of cap.controlPath) {
       const ctrl = byId.get(cid);
       if (ctrl?.kind === 'slider') return ctrl;
     }
   }
-  // Prefer inputs for amount-like constraints
-  if (/amount|position|collateral|size/i.test(blob)) {
+  // Amount/collateral-like → input, then percentage-picker
+  if (/\b(amount|position|collateral|size|trade)\b/.test(blob)) {
     for (const cid of cap.controlPath) {
       const ctrl = byId.get(cid);
       if (ctrl?.kind === 'input') return ctrl;
     }
+    for (const cid of cap.controlPath) {
+      const ctrl = byId.get(cid);
+      if (ctrl?.kind === 'percentage-picker') return ctrl;
+    }
   }
-  // Fallback: any non-submit control
+  // Unit-based match (e.g. "%" → percentage-picker, "USDC" → input)
+  if (c.bounds?.unit === '%') {
+    for (const cid of cap.controlPath) {
+      const ctrl = byId.get(cid);
+      if (ctrl?.kind === 'percentage-picker') return ctrl;
+    }
+  }
+  if (c.bounds?.unit === 'x') {
+    for (const cid of cap.controlPath) {
+      const ctrl = byId.get(cid);
+      if (ctrl?.kind === 'slider') return ctrl;
+    }
+  }
+  // Last resort: first value-bearing control in path
   for (const cid of cap.controlPath) {
     const ctrl = byId.get(cid);
-    if (ctrl && ctrl.kind !== 'submit-cta') return ctrl;
+    if (ctrl && isValueBearing(ctrl)) return ctrl;
   }
   return null;
+}
+
+function isValueBearing(ctrl: Control): boolean {
+  return ctrl.kind === 'input' || ctrl.kind === 'slider' || ctrl.kind === 'percentage-picker';
 }

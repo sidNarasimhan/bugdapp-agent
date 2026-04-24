@@ -58,6 +58,9 @@ export function createCrawlerNode(browserCtx: BrowserCtx) {
     const flowCount = kg.flows.length;
     console.log(`[Crawler] KG: ${pageCount} pages, ${componentCount} components, ${actionCount} actions, ${flowCount} flows`);
 
+    // Persist KG so future --skip-crawl can reload the rich version
+    writeFileSync(join(outputDir, 'knowledge-graph.json'), JSON.stringify(kg, null, 2));
+
     return {
       crawlData: crawlResult,
       knowledgeGraph: kg,
@@ -65,13 +68,27 @@ export function createCrawlerNode(browserCtx: BrowserCtx) {
   };
 }
 
-/** Load cached crawl + build KG, no browser. Returns {crawlData, knowledgeGraph} or null if no cache. */
+/** Load cached crawl + build KG, no browser. Returns {crawlData, knowledgeGraph} or null if no cache.
+ *  If an existing knowledge-graph.json on disk has MORE pages than we'd get rebuilding from
+ *  scraped-data.json, prefer the richer saved KG (happens when a previous crawl was full and
+ *  scraped-data was later overwritten by a narrower re-crawl). */
 export function loadCachedCrawlAndKG(outputDir: string, url: string): { crawlData: any; knowledgeGraph: KnowledgeGraph } | null {
   const cachedScraped = join(outputDir, 'scraped-data.json');
   const cachedContext = join(outputDir, 'context.json');
   if (!existsSync(cachedScraped) || !existsSync(cachedContext)) return null;
   const crawlData = loadCachedCrawl(outputDir);
-  const knowledgeGraph = buildKGFromCrawl(crawlData, url);
+  let knowledgeGraph = buildKGFromCrawl(crawlData, url);
+  const kgPath = join(outputDir, 'knowledge-graph.json');
+  if (existsSync(kgPath)) {
+    try {
+      const saved: KnowledgeGraph = JSON.parse(readFileSync(kgPath, 'utf-8'));
+      if ((saved.pages?.length ?? 0) > knowledgeGraph.pages.length ||
+          (saved.components?.length ?? 0) > knowledgeGraph.components.length) {
+        console.log(`[Crawler] prefer saved knowledge-graph.json (${saved.pages.length}p/${saved.components.length}c) over rebuild (${knowledgeGraph.pages.length}p/${knowledgeGraph.components.length}c)`);
+        knowledgeGraph = saved;
+      }
+    } catch {}
+  }
   return { crawlData, knowledgeGraph };
 }
 

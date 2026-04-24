@@ -148,7 +148,7 @@ for (const [cid, mid] of compOwner) {
 
 // component → module (triggered_by / reveals)
 for (const m of allMods) {
-  for (const cid of m.triggeredByComponentIds) {
+  for (const cid of (m.triggeredByComponentIds ?? [])) {
     if (nodeSet.has(cid)) vedges.push({ from: cid, to: m.id, color: { color: '#51cf66' }, width: 2, label: 'reveals', font: { size: 10, color: '#2b8a3e' } });
   }
 }

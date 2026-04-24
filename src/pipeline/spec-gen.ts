@@ -83,11 +83,37 @@ export function createComprehensionSpecGenNode() {
     const moduleById = new Map(modules.map(m => [m.id, m]));
     const specFiles: string[] = [];
 
+    const usedSlugs = new Set<string>();
     for (const cap of caps) {
       const mod = moduleById.get(cap.moduleId);
       if (!mod) continue;
       const modSlug = mod.id.replace(/^module:/, '').replace(/:/g, '-');
-      const capSlug = slug(cap.name || cap.id.split(':').pop() || 'cap');
+      const baseSlug = slug(cap.name || cap.id.split(':').pop() || 'cap');
+      // Append option-choice differentiators so Long vs Short, Market vs Limit produce
+      // distinct filenames even when the Capability Naming phase gave them the same name.
+      const choiceParts: string[] = [];
+      for (const [ctrlId, val] of Object.entries(cap.optionChoices)) {
+        const ctrl = controlById.get(ctrlId);
+        if (!ctrl) continue;
+        // Skip axes that the name already reflects (toggles that clearly shape the name like ZFP)
+        const kind = ctrl.kind;
+        if (kind === 'toggle') continue;  // toggle on/off usually in name already
+        if (kind === 'percentage-picker') continue;  // % in name
+        const v = String(val).toLowerCase().replace(/[^a-z0-9]+/g, '');
+        if (v && v !== baseSlug) choiceParts.push(v);
+      }
+      let capSlug = choiceParts.length > 0
+        ? `${baseSlug}-${choiceParts.join('-')}`.slice(0, 90)
+        : baseSlug;
+      // Uniqueness guard
+      const key = `${modSlug}/${capSlug}`;
+      if (usedSlugs.has(key)) {
+        let i = 2;
+        while (usedSlugs.has(`${modSlug}/${capSlug}-${i}`)) i++;
+        capSlug = `${capSlug}-${i}`;
+      }
+      usedSlugs.add(`${modSlug}/${capSlug}`);
+
       const dir = join(testsDir, modSlug);
       mkdirSync(dir, { recursive: true });
       const filename = `${capSlug}.spec.ts`;
