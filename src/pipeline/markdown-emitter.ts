@@ -10,9 +10,11 @@
  *
  * No LLM. Pure walk.
  */
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { AgentStateType, DAppModule, KnowledgeGraph } from '../agent/state.js';
+
+interface ModuleEdge { from: string; to: string; moduleId: string; type: 'leads_to_next' | 'interacts_with'; evidence: string; }
 
 export function createMarkdownEmitterNode() {
   return async (state: AgentStateType): Promise<Partial<AgentStateType>> => {
@@ -32,6 +34,14 @@ export function createMarkdownEmitterNode() {
     const dAppName = (state.crawlData as any)?.context?.title || new URL(config.url).hostname;
     const written: Array<{ path: string; bytes: number }> = [];
 
+    // Load module-edges.json if Relationship Inferrer has run — surface edges
+    // per-module so the agent sees flow ordering via RAG instead of leaving
+    // them as dead data.
+    const edgesPath = join(config.outputDir, 'module-edges.json');
+    const moduleEdges: ModuleEdge[] = existsSync(edgesPath)
+      ? (() => { try { return JSON.parse(readFileSync(edgesPath, 'utf-8')); } catch { return []; } })()
+      : [];
+
     // Index
     const indexMd = emitIndex(dAppName, config.url, modules);
     const indexPath = join(knowledgeDir, 'index.md');
@@ -41,7 +51,7 @@ export function createMarkdownEmitterNode() {
     // Per-module (recursive)
     const allModules = flatten(modules);
     for (const m of allModules) {
-      const md = emitModule(dAppName, m, kg);
+      const md = emitModule(dAppName, m, kg, moduleEdges);
       const slug = m.id.replace(/^module:/, '').replace(/:/g, '.');
       const path = join(knowledgeDir, `${slug}.md`);
       writeFileSync(path, md, 'utf-8');
@@ -87,7 +97,7 @@ function emitIndex(dAppName: string, url: string, modules: DAppModule[]): string
 
 // ── per-module .md ──────────────────────────────────────────────────────
 
-function emitModule(dAppName: string, m: DAppModule, kg: KnowledgeGraph): string {
+function emitModule(dAppName: string, m: DAppModule, kg: KnowledgeGraph, moduleEdges: ModuleEdge[] = []): string {
   const lines: string[] = [];
 
   // Contextual prefix (Anthropic's contextual-retrieval trick)
@@ -191,6 +201,17 @@ function emitModule(dAppName: string, m: DAppModule, kg: KnowledgeGraph): string
     lines.push('');
   }
 
+  // Step sequencing — from Relationship Inferrer's leads_to_next edges,
+  // scoped to this module. Helps the agent know "after clicking X, the next
+  // logical thing is Y" without needing to re-discover from the DOM.
+  const moduleLeads = moduleEdges.filter(e => e.moduleId === m.id && e.type === 'leads_to_next');
+  if (moduleLeads.length) {
+    lines.push(`## Step sequencing (leads-to-next, observed in user flows)`);
+    const chains = buildChains(moduleLeads, kg);
+    for (const chain of chains.slice(0, 6)) lines.push(`- ${chain}`);
+    lines.push('');
+  }
+
   // APIs
   if (m.apiEndpointIds.length) {
     const apis = (kg.apiEndpoints ?? [])
@@ -230,6 +251,39 @@ function emitModule(dAppName: string, m: DAppModule, kg: KnowledgeGraph): string
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
+
+/** Chain consecutive leads_to_next edges into human-readable sequences. */
+function buildChains(edges: ModuleEdge[], kg: KnowledgeGraph): string[] {
+  const nameFor = (cid: string) => {
+    const c = kg.components.find(x => x.id === cid);
+    return c ? `${c.role}:"${(c.name ?? '').slice(0, 30)}"` : cid;
+  };
+  const adj = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!adj.has(e.from)) adj.set(e.from, []);
+    adj.get(e.from)!.push(e.to);
+  }
+  // Start at nodes that have no inbound edge in this module
+  const incoming = new Set(edges.map(e => e.to));
+  const starts = [...adj.keys()].filter(k => !incoming.has(k));
+  const chains: string[] = [];
+  const seen = new Set<string>();
+  const walk = (node: string, path: string[]) => {
+    if (seen.has(node) || path.length > 6) {
+      chains.push(path.map(nameFor).join(' → '));
+      return;
+    }
+    seen.add(node);
+    const nexts = adj.get(node);
+    if (!nexts || nexts.length === 0) {
+      chains.push(path.map(nameFor).join(' → '));
+      return;
+    }
+    for (const next of nexts.slice(0, 3)) walk(next, [...path, next]);
+  };
+  for (const s of starts.slice(0, 5)) walk(s, [s]);
+  return [...new Set(chains)].filter(c => c.includes('→'));
+}
 
 function sweepRules(kg: KnowledgeGraph, m: DAppModule): string[] {
   const patterns = [

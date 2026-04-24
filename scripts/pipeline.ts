@@ -157,6 +157,15 @@ async function main() {
     console.log('[pipeline] skipping relationship-inferrer');
   }
 
+  // Phase 8b — Re-emit markdown with edges folded in (agent's RAG now sees
+  //            leads_to_next chains per module). No LLM. Cheap.
+  if (!flag('skip-markdown')) {
+    console.log('\n━━━ Phase 8b: Markdown Emitter (re-emit with edges) ━━━');
+    const { createMarkdownEmitterNode } = await import('../src/pipeline/markdown-emitter.js');
+    const md = createMarkdownEmitterNode();
+    Object.assign(state, await md(state));
+  }
+
   // Phase 9 — Spec Gen (no LLM, deterministic)
   if (!flag('skip-specgen')) {
     console.log('\n━━━ Phase 9: Spec Generator ━━━');
