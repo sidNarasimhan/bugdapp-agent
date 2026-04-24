@@ -472,6 +472,42 @@ export interface TestResult {
   durationMs: number;
 }
 
+// ── Module layer (Phase A — hierarchical KG) ──
+// Produced by src/pipeline/module-segmenter.ts. Business-logic grouping of
+// pages + components + docs + APIs + contracts into modules that humans (and
+// the agent) actually think in. See ARCHITECTURE.md for the hierarchy.
+
+export interface DAppModule {
+  /** Stable id, e.g. 'module:trade' or 'module:trade:zfp'. */
+  id: string;
+  /** Display name, e.g. 'Zero-Fee Perps'. */
+  name: string;
+  /** Parent module id if this is a sub-module. */
+  parentId?: string;
+  /** One-sentence description of what the user does here. */
+  description: string;
+  /** Why this module matters to the dApp's business. */
+  businessPurpose: string;
+  /** Archetype if the module is a primary test surface (perps / swap / etc). */
+  archetype?: string;
+  /** Pages that host this module. */
+  pageIds: string[];
+  /** Components that belong to this module (can appear in multiple modules for cross-cutting). */
+  componentIds: string[];
+  /** DocSection ids that explain this module. */
+  docSectionIds: string[];
+  /** API endpoint paths this module hits. */
+  apiEndpointIds: string[];
+  /** Contract addresses (0x…, lowercased) this module interacts with. */
+  contractAddresses: string[];
+  /** Constraint ids that apply to this module. */
+  constraintIds: string[];
+  /** Components on OTHER modules that reveal this module when clicked. */
+  triggeredByComponentIds: string[];
+  /** Sub-modules nested under this one. */
+  subModules?: DAppModule[];
+}
+
 // ── Plain pipeline state (no LangGraph) ──
 // Each pipeline node factory consumes+returns a subset of these fields.
 
@@ -492,6 +528,8 @@ export interface AgentStateType {
   knowledgeGraph: KnowledgeGraph;
   graph: { nodes: GraphNode[]; edges: GraphEdge[] };
   crawlData: any;
+  /** Module hierarchy produced by module-segmenter. */
+  modules?: DAppModule[];
   testPlan: TestPlan | null;
   specFiles: string[];
   testResults: TestResult[];

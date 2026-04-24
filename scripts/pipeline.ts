@@ -99,9 +99,36 @@ async function main() {
   const kgBuilder = createKGBuilderNode();
   Object.assign(state, await kgBuilder(state));
 
-  // Phase 3 — Explorer (agent-driven KG enhancement)
+  // Phase 3 — Comprehender (LLM) — runs before segmenter so segmenter has archetype/summary context
+  if (!flag('skip-comprehend')) {
+    console.log('\n━━━ Phase 3: Comprehender ━━━');
+    const comp = createComprehensionNode();
+    Object.assign(state, await comp(state));
+  } else {
+    console.log('[pipeline] skipping comprehend — reusing cached comprehension.json');
+  }
+
+  // Phase 4 — Module Segmenter (LLM) — identifies business modules + links to docs/APIs/components
+  if (!flag('skip-segment')) {
+    console.log('\n━━━ Phase 4: Module Segmenter ━━━');
+    const { createModuleSegmenterNode } = await import('../src/pipeline/module-segmenter.js');
+    const seg = createModuleSegmenterNode();
+    Object.assign(state, await seg(state));
+  } else {
+    console.log('[pipeline] skipping module-segmenter — reusing cached modules.json');
+  }
+
+  // Phase 5 — Markdown Emitter (no LLM) — writes knowledge/*.md for RAG
+  if (!flag('skip-markdown')) {
+    console.log('\n━━━ Phase 5: Markdown Emitter ━━━');
+    const { createMarkdownEmitterNode } = await import('../src/pipeline/markdown-emitter.js');
+    const md = createMarkdownEmitterNode();
+    Object.assign(state, await md(state));
+  }
+
+  // Phase 6 — Explorer (agent-driven enrichment)
   if (!flag('skip-explore') && !flag('skip-explorer')) {
-    console.log('\n━━━ Phase 3: Explorer (agent-driven) ━━━');
+    console.log('\n━━━ Phase 6: Explorer (agent-driven) ━━━');
     const { explore } = await import('../src/pipeline/explorer.js');
     const out = await explore();
     console.log(`[explorer] ${out.outcome} · ${out.observations.length} observations · ${(out.durationMs/1000).toFixed(1)}s`);
@@ -109,18 +136,9 @@ async function main() {
     console.log('[pipeline] skipping explore');
   }
 
-  // Phase 4 — Comprehender (LLM)
-  if (!flag('skip-comprehend')) {
-    console.log('\n━━━ Phase 4: Comprehender ━━━');
-    const comp = createComprehensionNode();
-    Object.assign(state, await comp(state));
-  } else {
-    console.log('[pipeline] skipping comprehend — reusing cached comprehension.json');
-  }
-
-  // Phase 5 — Spec Gen (no LLM, deterministic)
+  // Phase 7 — Spec Gen (no LLM, deterministic)
   if (!flag('skip-specgen')) {
-    console.log('\n━━━ Phase 5: Spec Generator ━━━');
+    console.log('\n━━━ Phase 7: Spec Generator ━━━');
     const sg = createComprehensionSpecGenNode();
     Object.assign(state, await sg(state));
   } else {
