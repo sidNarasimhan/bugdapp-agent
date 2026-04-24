@@ -15,10 +15,10 @@
  * switch all still work.
  */
 
-import { writeFileSync, readFileSync, mkdirSync, copyFileSync, existsSync, symlinkSync, readdirSync } from 'fs';
+import { writeFileSync, readFileSync, mkdirSync, copyFileSync, existsSync, symlinkSync, readdirSync, renameSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import type { AgentStateType } from '../agent/state.js';
+import type { AgentStateType, DAppUserFlow, DAppModule, KnowledgeGraph } from '../agent/state.js';
 import type { Comprehension, ComprehensionFlow } from './comprehender.js';
 import { getProfileOrThrow, type DAppProfile } from '../config.js';
 import { getArchetype } from '../agent/archetypes/index.js';
@@ -490,6 +490,33 @@ export function createComprehensionSpecGenNode() {
 
     const specFiles: string[] = [];
 
+    // ── NEW PATH: module-by-module spec gen from flows-by-persona.json ──
+    // Triggered when persona-mapper has run (state.userFlows populated).
+    // Old flat combinatorial specs move to tests/_legacy/ on first new-path run.
+    if (state.userFlows && state.userFlows.length > 0 && state.modules && state.modules.length > 0) {
+      console.log(`[ComprehensionSpecGen] using module-by-module path (${state.userFlows.length} flows)`);
+      moveLegacySpecs(testsDir);
+      const emitted = emitPerModuleSpecs(
+        state.userFlows,
+        state.modules,
+        state.knowledgeGraph,
+        config.url,
+        profile,
+        testsDir,
+      );
+      specFiles.push(...emitted);
+      // still emit adversarial.spec.ts at tests root for cross-module adversarial targets
+      if (comprehension.adversarialTargets.length > 0) {
+        const name = 'adversarial.spec.ts';
+        const code = emitAdversarialSpec(config.url, profile, comprehension.adversarialTargets);
+        writeFileSync(join(testsDir, name), code);
+        specFiles.push(join(testsDir, name));
+      }
+      console.log(`[ComprehensionSpecGen] wrote ${specFiles.length} specs module-by-module`);
+      return { specFiles } as any;
+    }
+
+    // ── LEGACY PATH: flat combinatorial from comprehension.primaryFlows ──
     // One primary-flow spec per category.
     const primary = comprehension.primaryFlows.filter(f => f.category === 'primary');
     const secondary = comprehension.primaryFlows.filter(f => f.category !== 'primary');
@@ -518,4 +545,130 @@ export function createComprehensionSpecGenNode() {
 
     return { specFiles } as any;
   };
+}
+
+// ── Module-by-module emission ───────────────────────────────────────────
+
+function moveLegacySpecs(testsDir: string): void {
+  if (!existsSync(testsDir)) return;
+  const entries = readdirSync(testsDir).filter(f => f.endsWith('.spec.ts'));
+  if (entries.length === 0) return;
+  const legacyDir = join(testsDir, '_legacy');
+  mkdirSync(legacyDir, { recursive: true });
+  for (const f of entries) {
+    const srcPath = join(testsDir, f);
+    const dstPath = join(legacyDir, f);
+    try {
+      // Move and rewrite relative imports — they now need one more '../' since
+      // the file moved deeper by one directory.
+      const src = readFileSync(srcPath, 'utf-8');
+      const rewritten = src.replace(/from\s+(['"])\.\.\//g, `from $1../../`);
+      writeFileSync(dstPath, rewritten, 'utf-8');
+      renameSync(srcPath, srcPath + '.moved'); // mark for cleanup
+      try { (readdirSync(testsDir).includes(f + '.moved')) && (require('fs').unlinkSync(srcPath + '.moved')); } catch {}
+    } catch {}
+  }
+  console.log(`[ComprehensionSpecGen] moved ${entries.length} old flat specs to tests/_legacy/ (imports rewritten)`);
+}
+
+function emitPerModuleSpecs(
+  flows: DAppUserFlow[],
+  modules: DAppModule[],
+  kg: KnowledgeGraph,
+  url: string,
+  profile: DAppProfile,
+  testsDir: string,
+): string[] {
+  const moduleById = new Map<string, DAppModule>();
+  const walk = (ms: DAppModule[]) => { for (const m of ms) { moduleById.set(m.id, m); if (m.subModules?.length) walk(m.subModules); } };
+  walk(modules);
+
+  const out: string[] = [];
+  for (const flow of flows) {
+    const m = moduleById.get(flow.moduleId);
+    if (!m) continue;
+    const moduleSlug = flow.moduleId.replace(/^module:/, '').replace(/:/g, '-');
+    const moduleDir = join(testsDir, moduleSlug);
+    mkdirSync(moduleDir, { recursive: true });
+    const flowSlug = flow.id.replace(/^flow:[^:]+:/, '').replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 50);
+    const fname = `${flow.persona}-${flowSlug}.spec.ts`;
+    const code = emitFlowSpec(flow, m, kg, url, profile);
+    writeFileSync(join(moduleDir, fname), code);
+    out.push(join(moduleDir, fname));
+  }
+  return out;
+}
+
+function emitFlowSpec(flow: DAppUserFlow, m: DAppModule, kg: KnowledgeGraph, url: string, profile: DAppProfile): string {
+  const lines: string[] = [];
+  lines.push(`// Auto-generated from flows-by-persona.json`);
+  lines.push(`// Module: ${m.name}  |  Persona: ${flow.persona}  |  Risk: ${flow.riskClass}`);
+  lines.push(`// Intent: ${flow.intent}`);
+  lines.push(`// Precondition: ${flow.precondition}`);
+  lines.push(`// Postcondition: ${flow.postcondition}`);
+  lines.push(`// Expected terminal: ${flow.expectedTerminal ?? 'unknown'}`);
+  lines.push(``);
+  lines.push(`import { test, expect, connectWallet, raceConfirmTransaction, verifyPage, emitFindingIfNeeded } from '../../fixtures/wallet.fixture';`);
+  lines.push(``);
+  lines.push(`const DAPP_URL = ${JSON.stringify(url)};`);
+  lines.push(`const DAPP_CHAIN_ID = ${profile.network.chainId};`);
+  lines.push(`const CHAIN_PARAMS = {`);
+  lines.push(`  chainHexId: ${JSON.stringify(profile.network.chainHexId)},`);
+  lines.push(`  chainName: ${JSON.stringify(profile.network.chain.charAt(0).toUpperCase() + profile.network.chain.slice(1))},`);
+  lines.push(`  rpcUrl: ${JSON.stringify(profile.network.rpcUrl)},`);
+  lines.push(`  blockExplorerUrl: ${JSON.stringify(profile.network.blockExplorerUrl)},`);
+  lines.push(`  nativeCurrency: ${JSON.stringify(profile.network.nativeCurrency)},`);
+  lines.push(`};`);
+  lines.push(`const CONNECT_HINTS = ${JSON.stringify(profile.selectors?.connect ?? {})};`);
+  lines.push(``);
+  lines.push(`test.describe(${JSON.stringify(`${m.name} — ${flow.persona}`)}, () => {`);
+  lines.push(`  test.beforeEach(async ({ page }) => {`);
+  lines.push(`    await connectWallet(page, DAPP_URL, CHAIN_PARAMS, CONNECT_HINTS);`);
+  lines.push(`  });`);
+  lines.push(``);
+  lines.push(`  test(${JSON.stringify(`[${flow.persona}] ${flow.intent}`)}, async ({ page }) => {`);
+  // Rationale + Expected comments (consumed by the spec matcher)
+  lines.push(`    // Rationale: ${flow.intent}`);
+  lines.push(`    // Expected: ${flow.postcondition}`);
+
+  for (let i = 0; i < flow.steps.length; i++) {
+    const step = flow.steps[i];
+    lines.push(``);
+    lines.push(`    // Step ${i + 1}: ${step.description}`);
+    for (const cid of step.componentIds) {
+      const comp = kg.components.find(c => c.id === cid);
+      if (!comp) continue;
+      lines.push(`    await ${locatorFor(comp)}.click({ timeout: 5000 }).catch(() => {});`);
+    }
+    if (step.assertion) lines.push(`    // Assert: ${step.assertion}`);
+    lines.push(`    await page.waitForTimeout(500);`);
+  }
+
+  // Shared tail: classify terminal state + verify tx if any
+  lines.push(``);
+  lines.push(`    // Terminal state + on-chain verify`);
+  lines.push(`    await page.waitForTimeout(1500);`);
+  if (flow.riskClass !== 'safe') {
+    lines.push(`    try { await raceConfirmTransaction(page.context(), page); } catch {}`);
+    lines.push(`    await page.waitForTimeout(3000);`);
+    lines.push(`    try {`);
+    lines.push(`      const result = await verifyPage(page, { url: DAPP_URL, archetype: ${JSON.stringify(profile.archetype)}, chainId: DAPP_CHAIN_ID });`);
+    lines.push(`      const dir = await emitFindingIfNeeded(result);`);
+    lines.push(`      if (dir) console.log('[chain] finding bundle:', dir);`);
+    lines.push(`    } catch (err) { console.warn('[chain]', (err as Error).message); }`);
+  }
+  lines.push(`  });`);
+  lines.push(`});`);
+  lines.push(``);
+  return lines.join('\n');
+}
+
+function locatorFor(comp: any): string {
+  if (comp.testId) return `page.getByTestId(${JSON.stringify(comp.testId)})`;
+  if (comp.role && comp.name) {
+    const name = String(comp.name).slice(0, 60);
+    return `page.getByRole(${JSON.stringify(comp.role)}, { name: ${JSON.stringify(name)} }).first()`;
+  }
+  if (comp.name) return `page.getByText(${JSON.stringify(String(comp.name).slice(0, 60))}).first()`;
+  return `page.locator(${JSON.stringify(comp.selector ?? 'body')}).first()`;
 }
