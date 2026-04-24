@@ -19,6 +19,7 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import type { AgentStateType, Capability, Control, DAppModule, KnowledgeGraph } from '../agent/state.js';
 import { getProfileOrThrow, type DAppProfile } from '../config.js';
+import { groupAssetsByClass } from './control-clustering.js';
 
 function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'x';
@@ -216,37 +217,53 @@ function emitCapabilitySpec(
     lines.push('');
   }
 
-  // Edge cases — one test per case, flip the targeted control
+  // Edge cases — one test per (edge-case × applicable row). Class-scoped
+  // constraints (e.g. "Max leverage for Forex is 50x") only fire on rows
+  // whose asset is in that class. Unscoped edge cases (wallet disconnect,
+  // wrong network) fire once per capability regardless of row.
+  const symbolToClass = buildSymbolClassMap(kg);
   for (const ec of cap.edgeCases.slice(0, 12)) {
     const target = controlById.get(ec.controlId);
-    lines.push(`  test(${JSON.stringify(`[edge] ${ec.name}`)}, async ({ page }) => {`);
-    lines.push(`    // Constraint: ${ec.constraintId}`);
-    lines.push(`    // Expected: ${ec.expectedRejection}`);
-    lines.push('');
-    // Re-emit happy path until the targeted control, then substitute invalid value
-    for (let i = 0; i < cap.controlPath.length; i++) {
-      const cid = cap.controlPath[i];
-      const ctrl = controlById.get(cid); if (!ctrl) continue;
-      if (cid === ec.controlId) {
-        lines.push(`    // Step ${i + 1}: (edge) ${ctrl.name} → invalid value ${ec.invalidValue}`);
-        for (const stmt of controlToPlaywright(ctrl, ec.invalidValue, kg)) lines.push(`    ${stmt}`);
-      } else {
-        const choice = cap.optionChoices[cid];
-        lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
-        for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
+    const scope = ec.appliesToAssetClass;
+    // Determine which rows this edge case fires on
+    const edgeRows: Array<{ asset?: string }> = scope
+      ? testRows.filter(r => r.asset && symbolToClass.get(r.asset) === scope)
+      : (testRows.length > 1 ? [testRows[0]] : testRows);  // unscoped → just the canonical row
+    if (edgeRows.length === 0) continue;
+
+    for (const row of edgeRows) {
+      const titleSuffix = row.asset ? ` on ${row.asset}` : '';
+      lines.push(`  test(${JSON.stringify(`[edge] ${ec.name}${titleSuffix}`)}, async ({ page }) => {`);
+      lines.push(`    // Constraint: ${ec.constraintId}${scope ? ` (asset class: ${scope})` : ''}`);
+      lines.push(`    // Expected: ${ec.expectedRejection}`);
+      if (row.asset) lines.push(`    // Asset row: ${row.asset}`);
+      lines.push('');
+      // Re-emit happy path until the targeted control, then substitute invalid value
+      for (let i = 0; i < cap.controlPath.length; i++) {
+        const cid = cap.controlPath[i];
+        const ctrl = controlById.get(cid); if (!ctrl) continue;
+        if (cid === ec.controlId) {
+          lines.push(`    // Step ${i + 1}: (edge) ${ctrl.name} → invalid value ${ec.invalidValue}`);
+          for (const stmt of controlToPlaywright(ctrl, ec.invalidValue, kg)) lines.push(`    ${stmt}`);
+        } else {
+          let choice = cap.optionChoices[cid];
+          if (ctrl.kind === 'modal-selector' && row.asset) choice = row.asset;
+          lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
+          for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
+        }
+        lines.push(`    await page.waitForTimeout(400);`);
       }
-      lines.push(`    await page.waitForTimeout(400);`);
+      lines.push('');
+      lines.push(`    // Assert rejection — we don't click submit, we classify terminal state`);
+      lines.push(`    await page.waitForTimeout(1500);`);
+      lines.push(`    const bodyText = await page.locator('body').innerText().catch(() => '');`);
+      lines.push(`    const looksRejected = /insufficient|minimum|maximum|invalid|reject|not\\s*allowed|too\\s*(low|high)|Wrong\\s*Network/i.test(bodyText);`);
+      lines.push(`    console.log('[edge]', ${JSON.stringify(ec.name + titleSuffix)}, 'rejected=', looksRejected);`);
+      lines.push(`    // soft assertion — some dApps silently disable the CTA rather than error`);
+      lines.push(`    expect(true).toBe(true);`);
+      lines.push(`  });`);
+      lines.push('');
     }
-    lines.push('');
-    lines.push(`    // Assert rejection — we don't click submit, we classify terminal state`);
-    lines.push(`    await page.waitForTimeout(1500);`);
-    lines.push(`    const bodyText = await page.locator('body').innerText().catch(() => '');`);
-    lines.push(`    const looksRejected = /insufficient|minimum|maximum|invalid|reject|not\\s*allowed|too\\s*(low|high)|Wrong\\s*Network/i.test(bodyText);`);
-    lines.push(`    console.log('[edge]', ${JSON.stringify(ec.name)}, 'rejected=', looksRejected);`);
-    lines.push(`    // soft assertion — some dApps silently disable the CTA rather than error`);
-    lines.push(`    expect(true).toBe(true);`);
-    lines.push(`  });`);
-    lines.push('');
   }
 
   lines.push(`});`);
@@ -256,55 +273,68 @@ function emitCapabilitySpec(
 
 // ── Control → Playwright code ──────────────────────────────────────────
 
-/** Pick a coverage-balanced sample of assets for data-driven test rows.
- *  For small groups (FOREX, EQUITIES, COMMODITIES, METAL) we sample up to 2
- *  flagship assets by name (BTCUSD/ETHUSD for crypto, EURUSD/USDJPY for FX,
- *  WTIUSD/BRENTUSD for oil, XAUUSD/XAGUSD for metals, AAPL/SPYUSD for equity).
- *  This guarantees a commodity test row actually names WTI, not just XAG.
+/** Build {displaySymbol → class} map from kg.assets so spec-gen can filter
+ *  class-scoped edge cases per test row (WTI row fires commodity edge cases,
+ *  BTC row fires crypto edge cases). */
+function buildSymbolClassMap(kg: KnowledgeGraph): Map<string, string> {
+  const out = new Map<string, string>();
+  const grouped = groupAssetsByClass(kg.assets ?? []);
+  for (const [cls, list] of grouped) {
+    for (const a of list) out.set(a.symbol.replace(/-/g, ''), cls);
+  }
+  return out;
+}
+
+/** Pick a coverage-balanced sample of assets for data-driven test rows. Uses
+ *  generic asset-class keywords (crypto/fx/equity/commodity/metal) to tolerate
+ *  whatever group naming the dApp uses (Pyth's CRYPTO1/FOREX, GMX's Crypto,
+ *  etc.). Within each class we prefer flagships (BTC/ETH, EUR/JPY, WTI/BRENT,
+ *  XAU/XAG, SPY/AAPL) so a commodity row actually exercises WTI, not just
+ *  whichever symbol appeared first. Safe across dApps — flagships are
+ *  finance-level, not Avantis-specific.
+ *
  *  Falls back to Control.options if kg.assets is empty. */
 function sampleTestRows(controlOptions: string[], kg: KnowledgeGraph): string[] {
   const assets = kg.assets ?? [];
   if (assets.length === 0) return controlOptions.slice(0, 6);
-  const symByGroup = new Map<string, string[]>();
-  for (const a of assets) {
-    const sym = a.symbol.replace(/-/g, '');
-    if (!symByGroup.has(a.group)) symByGroup.set(a.group, []);
-    symByGroup.get(a.group)!.push(sym);
-  }
-  const flagships: Record<string, string[]> = {
-    CRYPTO1: ['BTCUSD', 'ETHUSD'],
-    FOREX: ['EURUSD', 'USDJPY'],
-    EQUITIES: ['AAPL', 'SPYUSD', 'NVDA'],
-    COMMODITIES: ['WTIUSD', 'BRENTUSD'],
-    CRYPTO2: ['SOLUSD'],
-    CRYPTO3: ['DOGEUSD'],
-    CRYPTO4: ['SHIBUSD'],
+
+  const byClass = groupAssetsByClass(assets);
+  const classFlagships: Record<string, string[]> = {
+    crypto:   ['BTCUSD', 'ETHUSD', 'SOLUSD', 'BTC', 'ETH', 'SOL'],
+    fx:       ['EURUSD', 'USDJPY', 'GBPUSD', 'EUR', 'JPY'],
+    equity:   ['AAPL', 'SPYUSD', 'NVDA', 'TSLA', 'SPY'],
+    commodity:['WTIUSD', 'BRENTUSD', 'USOILSPOT', 'WTI', 'BRENT'],
+    metal:    ['XAUUSD', 'XAGUSD', 'XAU', 'XAG'],
   };
+  const classOrder = ['crypto', 'fx', 'equity', 'commodity', 'metal', 'other'];
+
   const picked: string[] = [];
-  for (const [group, prefs] of Object.entries(flagships)) {
-    const available = symByGroup.get(group) ?? [];
-    for (const pref of prefs) {
-      if (available.includes(pref) && !picked.includes(pref)) {
-        picked.push(pref);
-        break;  // one per group in first pass
-      }
-    }
-  }
-  // Second pass: fill second flagship per group if still under budget
-  for (const [group, prefs] of Object.entries(flagships)) {
+  const available = (cls: string) => (byClass.get(cls) ?? []).map(a => a.symbol.replace(/-/g, ''));
+
+  // Pass 1: one flagship (or first-available) per class
+  for (const cls of classOrder) {
     if (picked.length >= 10) break;
-    const available = symByGroup.get(group) ?? [];
-    for (const pref of prefs) {
-      if (available.includes(pref) && !picked.includes(pref)) {
-        picked.push(pref);
-        break;
-      }
-    }
+    const avail = available(cls);
+    if (avail.length === 0) continue;
+    const prefs = classFlagships[cls] ?? [];
+    const hit = prefs.find(p => avail.includes(p)) ?? avail[0];
+    if (hit && !picked.includes(hit)) picked.push(hit);
   }
-  // Fallback fill: any first-in-group not yet picked
-  for (const list of symByGroup.values()) {
+  // Pass 2: second flagship per class (crypto gets more budget since it dominates)
+  for (const cls of classOrder) {
     if (picked.length >= 10) break;
-    if (list[0] && !picked.includes(list[0])) picked.push(list[0]);
+    const avail = available(cls);
+    const prefs = classFlagships[cls] ?? [];
+    const second = prefs.find(p => avail.includes(p) && !picked.includes(p));
+    if (second) picked.push(second);
+  }
+  // Pass 3: anything remaining in priority order
+  for (const cls of classOrder) {
+    if (picked.length >= 10) break;
+    for (const sym of available(cls)) {
+      if (picked.length >= 10) break;
+      if (!picked.includes(sym)) picked.push(sym);
+    }
   }
   return picked.slice(0, 10);
 }

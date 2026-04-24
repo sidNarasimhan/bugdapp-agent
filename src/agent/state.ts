@@ -587,6 +587,11 @@ export interface CapabilityEdgeCase {
   expectedRejection: string;
   /** Constraint that generated this edge case. */
   constraintId: string;
+  /** If set, edge case only applies to test rows whose asset is in this class
+   *  (e.g. 'commodity', 'fx'). null/undefined = applies to all rows. Used by
+   *  spec-gen to gate per-row edge cases: WTI row gets commodity-max-leverage,
+   *  BTC row gets crypto-max-leverage, not both. */
+  appliesToAssetClass?: string;
 }
 
 export interface Capability {

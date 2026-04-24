@@ -153,6 +153,20 @@ function isMarketInvariant(c: DAppConstraint): boolean {
   return /\b(open interest|oi\b|tvl|market[- ]making|total supply|protocol[- ]wide|cap on|system[- ]wide)\b/.test(blob);
 }
 
+/** Detect which asset-class (if any) a constraint applies to by looking for
+ *  class keywords in its name, value, scope, or testImplication. Returns
+ *  undefined if the constraint is universal (applies regardless of asset).
+ *  Generic — keyword-level, no hardcoded asset names. */
+function detectAssetClass(c: DAppConstraint): string | undefined {
+  const blob = `${c.name} ${c.value} ${c.scope ?? ''} ${c.testImplication ?? ''}`.toLowerCase();
+  if (/\bforex\b|\bfx\b|\bcurrenc/.test(blob)) return 'fx';
+  if (/\bcommodit|\boil\b|\bgas\b|\benergy\b/.test(blob)) return 'commodity';
+  if (/\bequit|\bstock\b/.test(blob)) return 'equity';
+  if (/\bmetal\b|\bgold\b|\bsilver\b/.test(blob)) return 'metal';
+  if (/\bcrypto\b|\bbtc\b|\beth\b|\bperp crypto\b/.test(blob)) return 'crypto';
+  return undefined;
+}
+
 function appliesTo(c: DAppConstraint, cap: Capability, byId: Map<string, Control>): boolean {
   if (isMarketInvariant(c)) return false;
 
@@ -184,6 +198,7 @@ function generateEdgeCases(c: DAppConstraint, cap: Capability, byId: Map<string,
   const out: CapabilityEdgeCase[] = [];
   const targetControl = findTargetControl(c, cap, byId);
   if (!targetControl) return out;
+  const assetClass = detectAssetClass(c);
 
   if (c.bounds?.min !== undefined) {
     const v = Math.max(0, c.bounds.min - (c.bounds.unit === 'x' ? 1 : 0.01));
@@ -194,6 +209,7 @@ function generateEdgeCases(c: DAppConstraint, cap: Capability, byId: Map<string,
       invalidValue: `${v}${c.bounds.unit ?? ''}`,
       expectedRejection: c.testImplication || `Should reject values below ${c.bounds.min}${c.bounds.unit ?? ''}`,
       constraintId: c.id,
+      appliesToAssetClass: assetClass,
     });
   }
   if (c.bounds?.max !== undefined) {
@@ -205,6 +221,7 @@ function generateEdgeCases(c: DAppConstraint, cap: Capability, byId: Map<string,
       invalidValue: `${v}${c.bounds.unit ?? ''}`,
       expectedRejection: c.testImplication || `Should reject values above ${c.bounds.max}${c.bounds.unit ?? ''}`,
       constraintId: c.id,
+      appliesToAssetClass: assetClass,
     });
   }
   return out;

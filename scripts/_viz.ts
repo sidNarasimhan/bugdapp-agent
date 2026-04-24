@@ -7,7 +7,11 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
-const outputDir = join(process.cwd(), 'output', 'developer-avantisfi-com');
+function argVal(flag: string, dflt: string): string {
+  const i = process.argv.indexOf(flag);
+  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : dflt;
+}
+const outputDir = argVal('--dir', join(process.cwd(), 'output', 'developer-avantisfi-com'));
 const kg = JSON.parse(readFileSync(join(outputDir, 'knowledge-graph.json'), 'utf-8'));
 const modules = JSON.parse(readFileSync(join(outputDir, 'modules.json'), 'utf-8'));
 const edges = existsSync(join(outputDir, 'module-edges.json'))
@@ -15,6 +19,15 @@ const edges = existsSync(join(outputDir, 'module-edges.json'))
   : [];
 const flows = existsSync(join(outputDir, 'flows-by-persona.json'))
   ? JSON.parse(readFileSync(join(outputDir, 'flows-by-persona.json'), 'utf-8'))
+  : [];
+const controls = existsSync(join(outputDir, 'controls.json'))
+  ? JSON.parse(readFileSync(join(outputDir, 'controls.json'), 'utf-8'))
+  : [];
+const capabilities = existsSync(join(outputDir, 'capabilities.json'))
+  ? JSON.parse(readFileSync(join(outputDir, 'capabilities.json'), 'utf-8'))
+  : [];
+const structuredDocs = existsSync(join(outputDir, 'structured-docs.json'))
+  ? JSON.parse(readFileSync(join(outputDir, 'structured-docs.json'), 'utf-8'))
   : [];
 
 type Mod = { id: string; name: string; parentId?: string; archetype?: string; pageIds: string[]; componentIds: string[]; docSectionIds: string[]; contractAddresses: string[]; triggeredByComponentIds: string[]; description?: string; businessPurpose?: string; subModules?: Mod[] };
@@ -124,6 +137,55 @@ for (let i = 0; i < (kg.docSections ?? []).length; i++) {
   });
 }
 
+// Controls (semantic clusters under each module)
+const controlKindShape: Record<string, string> = {
+  input: 'database', slider: 'square', toggle: 'square', radio: 'triangle',
+  tabs: 'box', 'percentage-picker': 'star', 'modal-selector': 'triangleDown',
+  dropdown: 'triangle', 'submit-cta': 'star', link: 'diamond', tab: 'dot', button: 'dot',
+};
+const controlKindColor: Record<string, { bg: string; border: string }> = {
+  input:            { bg: '#d3f9d8', border: '#2f9e44' },
+  slider:           { bg: '#ffe3e3', border: '#c92a2a' },
+  toggle:           { bg: '#d0bfff', border: '#5f3dc4' },
+  radio:            { bg: '#ffec99', border: '#f08c00' },
+  tabs:             { bg: '#e7f5ff', border: '#1c7ed6' },
+  'percentage-picker': { bg: '#ffd8a8', border: '#e8590c' },
+  'modal-selector': { bg: '#b2f2bb', border: '#2f9e44' },
+  dropdown:         { bg: '#ffec99', border: '#f08c00' },
+  'submit-cta':     { bg: '#ffc9c9', border: '#c92a2a' },
+  link:             { bg: '#fff3bf', border: '#f59f00' },
+  tab:              { bg: '#e7f5ff', border: '#1c7ed6' },
+  button:           { bg: '#ffffff', border: '#343a40' },
+};
+for (const c of controls as any[]) {
+  const rc = controlKindColor[c.kind] ?? { bg: '#f8f9fa', border: '#495057' };
+  const opt = (c.options?.length ?? 0) > 1 ? ` [${c.options.length}]` : '';
+  add({
+    id: c.id,
+    label: `◈ ${String(c.name).slice(0, 28)}${opt}`,
+    group: 'control',
+    shape: controlKindShape[c.kind] ?? 'dot',
+    size: 16,
+    color: { background: rc.bg, border: rc.border, highlight: { background: rc.border, border: rc.border } },
+    font: { size: 12, color: '#212529', face: 'system-ui, sans-serif' },
+    title: `Control [${c.kind}]: ${c.name}\noptions: ${(c.options ?? []).slice(0, 8).join(', ') || '—'}\nmodule: ${c.moduleId}\ndescription: ${c.description ?? ''}`,
+  });
+}
+
+// Capability nodes — one per capability (shows the leaf flows in the brain)
+for (const cap of capabilities as any[]) {
+  add({
+    id: cap.id,
+    label: `▶ ${String(cap.name || 'unnamed').slice(0, 34)}`,
+    group: 'capability',
+    shape: 'ellipse',
+    color: { background: '#e9ecef', border: '#5c7cfa', highlight: { background: '#d0bfff', border: '#5c7cfa' } },
+    font: { size: 12, color: '#364fc7', face: 'system-ui, sans-serif' },
+    margin: 6,
+    title: `Capability: ${cap.name}\nintent: ${cap.intent}\nmodule: ${cap.moduleId}\nrisk: ${cap.riskClass}\nedge cases: ${(cap.edgeCases || []).length}\npersonas: ${(cap.personas || []).join(', ')}`,
+  });
+}
+
 // Edges
 const vedges: any[] = [];
 
@@ -170,11 +232,68 @@ for (const e of edges) {
   }
 }
 
+// module → control (has_control)
+for (const c of controls as any[]) {
+  if (nodeSet.has(c.moduleId) && nodeSet.has(c.id))
+    vedges.push({ from: c.moduleId, to: c.id, color: { color: '#94d82d' }, dashes: [2, 2], width: 1, arrows: { to: { enabled: false } } });
+}
+// control → control (feedsInto / gates / affectedBy — from Control Wiring)
+for (const c of controls as any[]) {
+  for (const to of c.feedsInto ?? []) {
+    if (nodeSet.has(to) && nodeSet.has(c.id))
+      vedges.push({ from: c.id, to, color: { color: '#2f9e44' }, arrows: 'to', label: 'feeds', font: { size: 9, color: '#2f9e44' } });
+  }
+  for (const to of c.gates ?? []) {
+    if (nodeSet.has(to) && nodeSet.has(c.id))
+      vedges.push({ from: c.id, to, color: { color: '#c92a2a' }, arrows: 'to', label: 'gates', font: { size: 9, color: '#c92a2a' } });
+  }
+}
+
+// module → capability (has_capability)
+for (const cap of capabilities as any[]) {
+  if (nodeSet.has(cap.moduleId) && nodeSet.has(cap.id))
+    vedges.push({ from: cap.moduleId, to: cap.id, color: { color: '#5c7cfa' }, dashes: [4, 2], arrows: { to: { enabled: false } } });
+}
+
+// cross-module relations from modules.json (dependsOn / produces / navigatesTo)
+for (const m of allMods as any[]) {
+  const rel = m.relations ?? {};
+  for (const to of rel.dependsOn ?? []) {
+    if (nodeSet.has(to) && nodeSet.has(m.id))
+      vedges.push({ from: m.id, to, color: { color: '#7048e8' }, width: 2, arrows: 'to', label: 'depends-on', font: { size: 10, color: '#7048e8' } });
+  }
+  for (const p of rel.produces ?? []) {
+    for (const consumer of p.consumedBy ?? []) {
+      if (nodeSet.has(consumer) && nodeSet.has(m.id))
+        vedges.push({ from: m.id, to: consumer, color: { color: '#0ca678' }, width: 2, arrows: 'to', label: `produces ${p.entity}`, font: { size: 10, color: '#0ca678' } });
+    }
+  }
+  for (const to of rel.navigatesTo ?? []) {
+    if (nodeSet.has(to) && nodeSet.has(m.id))
+      vedges.push({ from: m.id, to, color: { color: '#1c7ed6' }, dashes: [6, 3], arrows: 'to', label: 'nav-to', font: { size: 9, color: '#1c7ed6' } });
+  }
+}
+
+// Detect dApp name from output dir for title
+const dappName = outputDir.split(/[\\/]/).filter(Boolean).pop() ?? 'dapp';
+const displayTitle = dappName.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+// Asset summary by class (derived from kg.assets)
+const assetByClass: Record<string, string[]> = {};
+for (const a of (kg.assets ?? []) as any[]) {
+  const cls = a.group ?? 'other';
+  if (!assetByClass[cls]) assetByClass[cls] = [];
+  assetByClass[cls].push(String(a.symbol));
+}
+
 const stats = {
   modules: allMods.length,
+  controls: (controls as any[]).length,
+  capabilities: (capabilities as any[]).length,
   components: nodes.filter(n => n.group === 'component').length,
   pages: nodes.filter(n => n.group === 'page').length,
   docs: nodes.filter(n => n.group === 'doc').length,
+  assets: (kg.assets ?? []).length,
   edges: vedges.length,
   flows: flows.length,
 };
@@ -182,7 +301,7 @@ const stats = {
 const html = `<!doctype html>
 <html><head>
 <meta charset="utf-8"/>
-<title>Avantis KG — bugdapp-agent</title>
+<title>${displayTitle} — bugdapp-agent KG</title>
 <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 <style>
   :root{--bg:#f8f9fa;--panel:#ffffff;--text:#212529;--muted:#495057;--border:#ced4da;--accent:#1864ab}
@@ -204,13 +323,15 @@ const html = `<!doctype html>
 </style>
 </head><body>
 <div id="top">
-  <h1>Avantis KG</h1>
-  <span class="stat">modules <b>${stats.modules}</b></span>
-  <span class="stat">components <b>${stats.components}</b></span>
+  <h1>${displayTitle}</h1>
   <span class="stat">pages <b>${stats.pages}</b></span>
+  <span class="stat">modules <b>${stats.modules}</b></span>
+  <span class="stat">controls <b>${stats.controls}</b></span>
+  <span class="stat">capabilities <b>${stats.capabilities}</b></span>
+  <span class="stat">components <b>${stats.components}</b></span>
   <span class="stat">docs <b>${stats.docs}</b></span>
+  <span class="stat">assets <b>${stats.assets}</b></span>
   <span class="stat">edges <b>${stats.edges}</b></span>
-  <span class="stat">user flows <b>${stats.flows}</b></span>
   <div class="legend">
     <span><span class="sw" style="background:#d0ebff;border-color:#1971c2"></span>page</span>
     <span><span class="sw" style="background:#d6336c"></span>perps</span>

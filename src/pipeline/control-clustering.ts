@@ -192,34 +192,25 @@ function slug(s: string): string {
 function synthSiblingOptions(controls: Control[], modules: DAppModule[], kgAssets: KGAsset[]): void {
   const moduleById = new Map(modules.map(m => [m.id, m]));
 
-  // Flatten kg.assets with cross-group leaders first so downstream variant
-  // sampling reaches every asset class within the first few picks.
-  const assetsByGroup = new Map<string, KGAsset[]>();
-  for (const a of kgAssets) {
-    if (!assetsByGroup.has(a.group)) assetsByGroup.set(a.group, []);
-    assetsByGroup.get(a.group)!.push(a);
-  }
+  // Flatten kg.assets with cross-class leaders first so downstream variant
+  // sampling reaches every asset class within the first few picks. We classify
+  // the dApp's own group strings into generic asset classes (crypto, fx,
+  // equity, commodity, metal) via keyword match — works across Avantis/Pyth
+  // (CRYPTO1/FOREX/...), GMX-style (Crypto/Forex/...), etc.
+  const grouped = groupAssetsByClass(kgAssets);
+  const classOrder = ['crypto', 'fx', 'equity', 'commodity', 'metal', 'other'];
   const canonicalAssetList: string[] = [];
   const seenSym = new Set<string>();
-  // Round 1: one per group in priority order
-  const groupOrder = ['CRYPTO1', 'FOREX', 'EQUITIES', 'COMMODITIES', 'CRYPTO2', 'CRYPTO3', 'CRYPTO4'];
-  for (const g of groupOrder) {
-    for (const a of (assetsByGroup.get(g) ?? []).slice(0, 1)) {
+  // Round 1: one leader per class
+  for (const cls of classOrder) {
+    for (const a of (grouped.get(cls) ?? []).slice(0, 1)) {
       const sym = displaySymbol(a.symbol);
       if (!seenSym.has(sym)) { seenSym.add(sym); canonicalAssetList.push(sym); }
     }
   }
-  // Round 2: the rest
-  for (const g of groupOrder) {
-    for (const a of (assetsByGroup.get(g) ?? []).slice(1)) {
-      const sym = displaySymbol(a.symbol);
-      if (!seenSym.has(sym)) { seenSym.add(sym); canonicalAssetList.push(sym); }
-    }
-  }
-  // Unknown groups
-  for (const [g, list] of assetsByGroup) {
-    if (groupOrder.includes(g)) continue;
-    for (const a of list) {
+  // Round 2: everything else, class by class
+  for (const cls of classOrder) {
+    for (const a of (grouped.get(cls) ?? []).slice(1)) {
       const sym = displaySymbol(a.symbol);
       if (!seenSym.has(sym)) { seenSym.add(sym); canonicalAssetList.push(sym); }
     }
@@ -260,9 +251,38 @@ function synthSiblingOptions(controls: Control[], modules: DAppModule[], kgAsset
   }
 }
 
-/** Avantis UI shows BTCUSD not BTC-USD. Normalise feed symbols. */
+/** Price-feed symbols are usually hyphenated (BTC-USD); UI buttons typically
+ *  concatenate (BTCUSD). Strip hyphens to match the DOM. */
 function displaySymbol(s: string): string {
   return s.replace(/-/g, '');
+}
+
+/** Classify dApp-specific asset group strings into generic asset classes via
+ *  keyword match — tolerant across naming conventions (Pyth's CRYPTO1/FOREX,
+ *  GMX's Crypto/Forex, raw "commodities"/"metals"). Uses `symbol` as a fallback
+ *  hint for metals-inside-commodities (XAU/XAG). */
+export function groupAssetsByClass(assets: KGAsset[]): Map<string, KGAsset[]> {
+  const out = new Map<string, KGAsset[]>();
+  const add = (cls: string, a: KGAsset) => {
+    if (!out.has(cls)) out.set(cls, []);
+    out.get(cls)!.push(a);
+  };
+  for (const a of assets) {
+    const g = (a.group ?? '').toLowerCase();
+    const s = (a.symbol ?? '').toUpperCase();
+    if (/^(xau|xag|gold|silver)/.test(s)) { add('metal', a); continue; }
+    if (/crypto/.test(g)) { add('crypto', a); continue; }
+    if (/forex|\bfx\b/.test(g)) { add('fx', a); continue; }
+    if (/equit|stock/.test(g)) { add('equity', a); continue; }
+    if (/commodit|energy|oil/.test(g)) { add('commodity', a); continue; }
+    if (/metal/.test(g)) { add('metal', a); continue; }
+    // Fallback: guess from symbol shape
+    if (/^(BTC|ETH|SOL|BNB|ARB|AVAX|DOGE|ADA|DOT|LINK|UNI|MATIC|POL)/.test(s)) add('crypto', a);
+    else if (/^(EUR|GBP|AUD|NZD|CHF|JPY|CAD|CNH|BRL|IDR|INR|MXN|ZAR|TRY|SGD|HKD|KRW|USD)/.test(s) && /USD/.test(s)) add('fx', a);
+    else if (/^(WTI|BRENT|NAT|GAS|OIL)/.test(s)) add('commodity', a);
+    else add('other', a);
+  }
+  return out;
 }
 
 function uniqueKeepFirst(canon: string[], detected?: string): string[] {
