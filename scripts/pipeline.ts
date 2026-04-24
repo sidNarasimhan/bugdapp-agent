@@ -99,18 +99,28 @@ async function main() {
   const kgBuilder = createKGBuilderNode();
   Object.assign(state, await kgBuilder(state));
 
-  // Phase 3 — Comprehender (LLM)
+  // Phase 3 — Explorer (agent-driven KG enhancement)
+  if (!flag('skip-explore') && !flag('skip-explorer')) {
+    console.log('\n━━━ Phase 3: Explorer (agent-driven) ━━━');
+    const { explore } = await import('../src/pipeline/explorer.js');
+    const out = await explore();
+    console.log(`[explorer] ${out.outcome} · ${out.observations.length} observations · ${(out.durationMs/1000).toFixed(1)}s`);
+  } else {
+    console.log('[pipeline] skipping explore');
+  }
+
+  // Phase 4 — Comprehender (LLM)
   if (!flag('skip-comprehend')) {
-    console.log('\n━━━ Phase 3: Comprehender ━━━');
+    console.log('\n━━━ Phase 4: Comprehender ━━━');
     const comp = createComprehensionNode();
     Object.assign(state, await comp(state));
   } else {
     console.log('[pipeline] skipping comprehend — reusing cached comprehension.json');
   }
 
-  // Phase 4 — Spec Gen (no LLM, deterministic)
+  // Phase 5 — Spec Gen (no LLM, deterministic)
   if (!flag('skip-specgen')) {
-    console.log('\n━━━ Phase 4: Spec Generator ━━━');
+    console.log('\n━━━ Phase 5: Spec Generator ━━━');
     const sg = createComprehensionSpecGenNode();
     Object.assign(state, await sg(state));
   } else {
