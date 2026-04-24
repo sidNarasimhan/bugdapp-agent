@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { healSpec } from '../src/chat/agent/spec-healer.js';
-import type { ExecutorStep } from '../src/chat/agent/executor.js';
+import { healSpec } from '../src/pipeline/spec-healer.js';
+import type { ExecutorStep } from '../src/agent/loop.js';
 
 const ORIGINAL_SPEC = `import { test, expect, connectWallet } from '../fixtures/wallet.fixture';
 

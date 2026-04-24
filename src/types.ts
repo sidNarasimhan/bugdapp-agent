@@ -188,3 +188,32 @@ export interface QAReport {
   explorationSummary: string;
   bugsFound: string[];
 }
+
+// ── Archetype + UI state types (formerly in src/agent/profiles/types.ts) ──
+
+export type ArchetypeName = 'perps' | 'swap' | 'lending' | 'staking' | 'cdp' | 'yield' | 'lp' | 'bridge';
+
+/** Per-archetype defaults — each archetype can derive these from comprehension/KG at runtime. */
+export interface ValueConfig {
+  minPositionSizeUsd?: number;
+  targetLeverage?: number | null;
+  preferredAmountUsd?: number;
+  slippageBps?: number;
+}
+
+/** Terminal states a form can reach after filling. */
+export type TerminalState =
+  | 'ready-to-action'
+  | 'needs-approval'
+  | 'wrong-network'
+  | 'unfunded'
+  | 'unconnected'
+  | 'min-amount'
+  | 'max-amount'
+  | 'unknown';
+
+export interface ClassifiedCta {
+  state: TerminalState;
+  ctaText: string;
+  ctaDisabled: boolean;
+}

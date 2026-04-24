@@ -1,5 +1,4 @@
-import { Annotation, messagesStateReducer } from '@langchain/langgraph';
-import { BaseMessage } from '@langchain/core/messages';
+// KG types + DAppGraph. No LangGraph dependency — pipeline state is plain interface below.
 import { z } from 'zod';
 
 // ── Knowledge Graph Node Types ──
@@ -473,92 +472,30 @@ export interface TestResult {
   durationMs: number;
 }
 
-// ── LangGraph State ──
+// ── Plain pipeline state (no LangGraph) ──
+// Each pipeline node factory consumes+returns a subset of these fields.
 
-export const AgentState = Annotation.Root({
-  messages: Annotation<BaseMessage[]>({
-    reducer: messagesStateReducer,
-    default: () => [],
-  }),
+export interface PipelineConfig {
+  url: string;
+  seedPhrase: string;
+  apiKey: string;
+  outputDir: string;
+  headless: boolean;
+  explorerModel: string;
+  plannerModel: string;
+  generatorModel: string;
+  healerModel: string;
+}
 
-  // Knowledge graph — shared across all agents
-  knowledgeGraph: Annotation<KnowledgeGraph>({
-    reducer: mergeKG,
-    default: emptyKnowledgeGraph,
-  }),
-
-  // Real graph (built by KG_Builder, used by explorer/planner)
-  graph: Annotation<{ nodes: GraphNode[]; edges: GraphEdge[] }>({
-    reducer: (existing, update) => {
-      // Merge: deserialize both, combine, re-serialize
-      const g = DAppGraph.deserialize(existing);
-      for (const n of update.nodes) g.addNode(n);
-      for (const e of update.edges) g.addEdge(e);
-      return g.serialize();
-    },
-    default: () => ({ nodes: [], edges: [] }),
-  }),
-
-  // Raw crawl data (from crawler, consumed by explorer/planner)
-  crawlData: Annotation<any>({
-    reducer: (_, update) => update,
-    default: () => null,
-  }),
-
-  // Structured test plan (from planner, consumed by generator)
-  testPlan: Annotation<TestPlan | null>({
-    reducer: (_, update) => update,
-    default: () => null,
-  }),
-
-  // Generated spec file paths
-  specFiles: Annotation<string[]>({
-    reducer: (existing, update) => [...new Set([...existing, ...update])],
-    default: () => [],
-  }),
-
-  // Test results (from executor)
-  testResults: Annotation<TestResult[]>({
-    reducer: (_, update) => update,
-    default: () => [],
-  }),
-
-  // Pipeline control
-  iteration: Annotation<number>({
-    reducer: (_, update) => update,
-    default: () => 0,
-  }),
-
-  maxIterations: Annotation<number>({
-    reducer: (_, update) => update,
-    default: () => 3,
-  }),
-
-  // Config passed through state
-  config: Annotation<{
-    url: string;
-    seedPhrase: string;
-    apiKey: string;
-    outputDir: string;
-    headless: boolean;
-    explorerModel: string;
-    plannerModel: string;
-    generatorModel: string;
-    healerModel: string;
-  }>({
-    reducer: (_, update) => update,
-    default: () => ({
-      url: '',
-      seedPhrase: '',
-      apiKey: '',
-      outputDir: '',
-      headless: false,
-      explorerModel: 'deepseek/deepseek-v3.2',
-      plannerModel: 'deepseek/deepseek-v3.2',
-      generatorModel: 'qwen/qwen3-coder',
-      healerModel: 'qwen/qwen3-coder',
-    }),
-  }),
-});
-
-export type AgentStateType = typeof AgentState.State;
+export interface AgentStateType {
+  messages: any[];
+  knowledgeGraph: KnowledgeGraph;
+  graph: { nodes: GraphNode[]; edges: GraphEdge[] };
+  crawlData: any;
+  testPlan: TestPlan | null;
+  specFiles: string[];
+  testResults: TestResult[];
+  iteration: number;
+  maxIterations: number;
+  config: PipelineConfig;
+}

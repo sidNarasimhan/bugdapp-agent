@@ -1,4 +1,4 @@
-import type { ArchetypeName } from '../profiles/types.js';
+import type { ArchetypeName } from '../../types.js';
 import type { Archetype } from './types.js';
 import { perpsArchetype } from './perps.js';
 import { swapArchetype } from './swap.js';

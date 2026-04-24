@@ -1,26 +1,24 @@
 /**
- * Transport-agnostic message handler. Discord + Slack both call this.
+ * Transport-agnostic message handler. CLI + Discord + Slack all call this.
  *
  * Flow:
  *   user message
- *     → if pending approval: classify 'go'/'no'/other
+ *     → if pending approval: classify 'go'/'no'
  *     → else: parseIntent (LLM) → route
  *   task intent:
- *     → matchTaskToSpec → build plan text → set pending → post
+ *     → matchTaskToSpec → plan text → set pending → post
  *   approval:
- *     → spec mode: run Playwright suite via dispatcher
+ *     → spec mode: heal-runner (Playwright + agent self-heal + verify)
  *     → act mode:  run executor agent (act-observe loop)
  *     → on failure: file Notion page with step trace
  */
-import { join } from 'path';
-import { fileFinding, notionConfigured, fileAgentFinding } from '../integrations/notion.js';
+import { fileAgentFinding, fileHealFinding, notionConfigured } from './notion.js';
 import { setPending, getPending, clearPending, classifyReply, key as pendingKey, type Pending, type PendingInput } from './approvals.js';
-import { parseIntent, listFlowsReply, helpReply } from './nl-agent.js';
-import { matchTaskToSpec } from './agent/spec-matcher.js';
-import { runExecutor, type ExecutorResult, type ExecutorStep } from './agent/executor.js';
-import { healSpec, type HealResult } from './agent/spec-healer.js';
-import { runDApp, formatSummary, type RunResult } from './dispatcher.js';
-import { avantisProfile } from '../agent/profiles/avantis.js';
+import { parseIntent, listFlowsReply, helpReply } from './intent.js';
+import { matchTaskToSpec } from './matcher.js';
+import { runExecutor, type ExecutorResult, type ExecutorStep } from '../agent/loop.js';
+import { runSuiteWithHealing, formatHealSummary, type HealRunSummary } from '../pipeline/heal-runner.js';
+import { activeDApp } from '../config.js';
 
 export interface ReplyFns {
   reply: (msg: string) => Promise<void>;
@@ -28,7 +26,7 @@ export interface ReplyFns {
 }
 
 export interface Identity {
-  platform: 'discord' | 'slack';
+  platform: 'discord' | 'slack' | 'cli';
   userId: string;
   channelId: string;
 }
@@ -50,11 +48,9 @@ export async function handleMessage(text: string, id: Identity, io: ReplyFns): P
       clearPending(k);
       return io.reply(`🛑 cancelled.`);
     }
-    // unclear reply → fall through; a new task intent overwrites pending
   }
 
   const intent = await parseIntent(text);
-
   switch (intent.type) {
     case 'help':       return io.reply(helpReply());
     case 'list':       return io.reply(listFlowsReply());
@@ -74,27 +70,28 @@ async function replyStatus(io: ReplyFns): Promise<void> {
 }
 
 async function handleTask(task: string, k: string, io: ReplyFns): Promise<void> {
-  const match = await matchTaskToSpec(task);
+  const dapp = activeDApp();
+  const match = await matchTaskToSpec(task, dapp);
 
   let planText: string;
   let pending: PendingInput;
 
   if (match.mode === 'spec' && match.specFile) {
-    pending = { kind: 'spec', dAppName: avantisProfile.name, specFile: match.specFile, task };
+    pending = { kind: 'spec', dAppName: dapp.name, specFile: match.specFile, task };
     planText = [
-      `**Plan — spec mode (cheap)**`,
-      `Matched task to existing spec: \`${match.specFile}\``,
+      `**Plan — spec mode**`,
+      `Matched to spec: \`${match.specFile}\``,
       match.confidence !== undefined ? `Confidence: ${Math.round(match.confidence * 100)}%` : '',
-      `I'll run the Playwright spec against live Avantis, stream progress, and file a Notion page on any failure.`,
+      `I'll run Playwright. If it fails I'll take over, recover, and heal the .spec.ts so next run is cheap.`,
       match.reason ? `_${match.reason}_` : '',
     ].filter(Boolean).join('\n');
   } else {
-    pending = { kind: 'act', dAppName: avantisProfile.name, task };
+    pending = { kind: 'act', dAppName: dapp.name, task };
     planText = [
       `**Plan — act mode (browser agent)**`,
       `Task: ${task}`,
-      `I'll drive a real Chromium + MetaMask browser, reasoning step-by-step via ${process.env.EXECUTOR_MODEL ?? 'anthropic/claude-sonnet-4.5'}.`,
-      `Budget: 20 steps, 100k tokens, 8 min max. Est ~$0.15.`,
+      `I'll drive Chromium + MetaMask via ${process.env.EXECUTOR_MODEL ?? 'anthropic/claude-sonnet-4.5'}.`,
+      `Budget: 20 steps, 100k tokens, 8 min. Est ~$0.15–0.40.`,
       match.reason ? `_${match.reason}_` : '',
     ].filter(Boolean).join('\n');
   }
@@ -120,67 +117,24 @@ async function executeSpec(p: Extract<Pending, { kind: 'spec' }>, io: ReplyFns):
       const chunk = progressBuf.splice(0, progressBuf.length).join('\n').slice(0, 1800);
       if (io.progress) await io.progress('```\n' + chunk + '\n```');
     };
-    process.env.PLAYWRIGHT_GREP_FILES = `tests/${p.specFile}`;
-    let result: RunResult;
-    try {
-      result = await runDApp(avantisProfile, 'all', (line) => {
+    const summary = await runSuiteWithHealing({
+      specFilter: `tests/${p.specFile}`,
+      verifyAfterHeal: true,
+      onLine: (line: string) => {
         progressBuf.push(line);
         const now = Date.now();
         if (now - lastEmit > 3500 || progressBuf.join('\n').length > 1500) {
           lastEmit = now;
           flush();
         }
-      });
-      await flush();
-    } finally {
-      delete process.env.PLAYWRIGHT_GREP_FILES;
-    }
-    await io.reply(formatSummary(result));
-
-    // Spec passed — done, no healing needed
-    if (result.summary.failures.length === 0) {
-      return;
-    }
-
-    // Spec failed — cascade to act mode + try to heal the file
-    await io.reply(
-      `↺ Spec failed. Cascading to act-mode agent to recover + heal the file so next run is cheap Playwright.`,
-    );
-    const actResult = await runExecutor({ task: p.task }, async () => {});
-
-    if (actResult.outcome === 'complete') {
-      await io.reply(
-        `✅ Agent recovered. ${actResult.steps.length} steps, ${(actResult.durationMs / 1000).toFixed(1)}s, ~${Math.round(actResult.tokensUsed / 1000)}k tok.\n` +
-        `${actResult.summary}\n\n` +
-        `Attempting to heal \`${p.specFile}\`...`,
-      );
-      const heal = await healSpecFile(p.specFile, result.summary.failures[0]?.title ?? p.task, actResult.steps);
-      if (heal.ok) {
-        await io.reply(
-          `🔧 Healed \`${p.specFile}\` — injected ${heal.linesInjected} lines into test "${heal.replacedTestTitle}".\n` +
-          `Backup: \`${heal.backupPath}\`\n` +
-          `Next run of this spec will be pure Playwright (no LLM cost).`,
-        );
-      } else {
-        await io.reply(`⚠️  Heal failed: ${heal.reason}`);
-      }
-    } else {
-      await io.reply(
-        `❌ Agent also failed (${actResult.outcome}). Real bug, filing to Notion.\n` +
-        `${actResult.summary}${actResult.terminalState ? ` · state: \`${actResult.terminalState}\`` : ''}`,
-      );
-      await maybeFileActFinding(actResult, p.task, io);
-    }
-
-    await maybeFileSpecFindings(result, p.task, io);
+      },
+    });
+    await flush();
+    await io.reply('```\n' + formatHealSummary(summary) + '\n```');
+    await maybeFileHealFindings(summary, p.task, io);
   } finally {
     activeRuns.delete(name);
   }
-}
-
-async function healSpecFile(specFile: string, failingTestTitle: string, steps: ExecutorStep[]): Promise<HealResult> {
-  const specPath = join(process.cwd(), 'output', 'developer-avantisfi-com', 'tests', specFile);
-  return healSpec(specPath, failingTestTitle, steps);
 }
 
 async function executeAct(p: Extract<Pending, { kind: 'act' }>, io: ReplyFns): Promise<void> {
@@ -195,7 +149,6 @@ async function executeAct(p: Extract<Pending, { kind: 'act' }>, io: ReplyFns): P
       const chunk = progressBuf.splice(0, progressBuf.length).join('\n').slice(0, 1800);
       if (io.progress) await io.progress('```\n' + chunk + '\n```');
     };
-
     const onStep = async (step: ExecutorStep) => {
       const head = step.success ? '✓' : '✗';
       const argPreview = summarizeInput(step.input);
@@ -208,7 +161,7 @@ async function executeAct(p: Extract<Pending, { kind: 'act' }>, io: ReplyFns): P
       }
     };
 
-    await io.reply(`▶️  starting browser agent — this opens a real Chromium window on the bot host.`);
+    await io.reply(`▶️  starting browser agent — real Chromium window opening on bot host.`);
     let result: ExecutorResult;
     try {
       result = await runExecutor({ task: p.task }, onStep);
@@ -246,16 +199,14 @@ function formatExecutorSummary(r: ExecutorResult, task: string): string {
   return `${head}\n${body}`;
 }
 
-async function maybeFileSpecFindings(r: RunResult, task: string, io: ReplyFns): Promise<void> {
-  if (r.summary.failures.length === 0) return;
+async function maybeFileHealFindings(s: HealRunSummary, task: string, io: ReplyFns): Promise<void> {
+  if (s.healed.length === 0 && s.unhealed.length === 0) return;
   if (!notionConfigured()) {
-    return io.reply(`ℹ️  ${r.summary.failures.length} failure(s) — Notion not configured.`);
+    return io.reply(`ℹ️  Notion not configured — skipping findings.`);
   }
   const urls: string[] = [];
-  for (const f of r.summary.failures) {
-    const url = await fileFinding({
-      dApp: r.dApp, archetype: avantisProfile.archetype, url: r.url, outputDir: r.outputDir, failure: f,
-    });
+  for (const item of [...s.healed, ...s.unhealed]) {
+    const url = await fileHealFinding({ task, item });
     if (url) urls.push(url);
   }
   if (urls.length) {
@@ -265,16 +216,15 @@ async function maybeFileSpecFindings(r: RunResult, task: string, io: ReplyFns): 
 
 async function maybeFileActFinding(r: ExecutorResult, task: string, io: ReplyFns): Promise<void> {
   if (r.outcome === 'complete') return;
-  if (!notionConfigured()) {
-    return io.reply(`ℹ️  Notion not configured — skipping report filing.`);
-  }
+  if (!notionConfigured()) return io.reply(`ℹ️  Notion not configured — skipping report.`);
+  const dapp = activeDApp();
   const url = await fileAgentFinding({
-    dApp: avantisProfile.name,
-    archetype: avantisProfile.archetype,
-    url: avantisProfile.url,
+    dApp: dapp.name,
+    archetype: dapp.archetype,
+    url: dapp.url,
     task,
     result: r,
   });
-  if (url) await io.reply(`📝 filed finding: ${url}`);
-  else await io.reply(`⚠️  failed to file finding (check NOTION_TOKEN + DB schema).`);
+  if (url) await io.reply(`📝 filed: ${url}`);
+  else await io.reply(`⚠️  Notion filing failed (check token + DB schema).`);
 }

@@ -11,7 +11,7 @@
  * overrides specific quirks.
  */
 
-import type { ValueConfig, ClassifiedCta, TerminalState } from '../profiles/types.js';
+import type { ValueConfig, ClassifiedCta, TerminalState } from '../../types.js';
 
 /** Runtime context passed to archetype classifiers — strings scraped from the live page at test time. */
 export interface ClassifyContext {

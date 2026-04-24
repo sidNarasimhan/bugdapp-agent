@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CostTracker } from '../src/llm/cost-tracker.js';
+import { CostTracker } from '../src/core/cost-tracker.js';
 
 describe('CostTracker', () => {
   it('tracks usage across multiple calls', () => {

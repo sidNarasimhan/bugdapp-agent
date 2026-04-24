@@ -6,7 +6,7 @@
  * Inverse: unstake/withdraw — often queued with a delay.
  */
 
-import type { ValueConfig } from '../profiles/types.js';
+import type { ValueConfig } from '../../types.js';
 import type { Archetype, ClassifyContext } from './types.js';
 import { classifyCommon } from './types.js';
 
