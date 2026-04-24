@@ -79,6 +79,10 @@ export function createComprehensionSpecGenNode() {
     // Move any root-level old specs to _legacy/
     moveLegacySpecs(testsDir);
 
+    // Move stale module-subdir specs from previous runs into _legacy/ so the
+    // current output reflects the current KG truthfully.
+    archiveStaleModuleSpecs(testsDir);
+
     const controlById = new Map(controls.map(c => [c.id, c]));
     const moduleById = new Map(modules.map(m => [m.id, m]));
     const specFiles: string[] = [];
@@ -323,6 +327,36 @@ function firstComponentLocator(ctrl: Control, kg: KnowledgeGraph): string | null
 }
 
 // ── Legacy spec move ───────────────────────────────────────────────────
+
+/** Stale module-subdir specs from previous pipeline runs accumulate when slugs change.
+ *  This purges everything under tests/<module>/ into tests/_legacy/<module>-<timestamp>/
+ *  before the new run writes its fresh set. Keeps history without polluting the live dir. */
+function archiveStaleModuleSpecs(testsDir: string): void {
+  if (!existsSync(testsDir)) return;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const subdirs = readdirSync(testsDir).filter(f => {
+    if (f === '_legacy' || f.startsWith('.')) return false;
+    try { return statSync(join(testsDir, f)).isDirectory(); } catch { return false; }
+  });
+  let moved = 0;
+  for (const sub of subdirs) {
+    const srcDir = join(testsDir, sub);
+    const specs = readdirSync(srcDir).filter(f => f.endsWith('.spec.ts'));
+    if (specs.length === 0) continue;
+    const dstDir = join(testsDir, '_legacy', `${sub}-${timestamp}`);
+    mkdirSync(dstDir, { recursive: true });
+    for (const f of specs) {
+      try {
+        const src = readFileSync(join(srcDir, f), 'utf-8');
+        const rewritten = src.replace(/from\s+(['"])\.\.\/\.\.\//g, `from $1../../../`);
+        writeFileSync(join(dstDir, f), rewritten, 'utf-8');
+        require('fs').unlinkSync(join(srcDir, f));
+        moved++;
+      } catch {}
+    }
+  }
+  if (moved > 0) console.log(`[SpecGen] archived ${moved} stale module specs to tests/_legacy/`);
+}
 
 function moveLegacySpecs(testsDir: string): void {
   if (!existsSync(testsDir)) return;
