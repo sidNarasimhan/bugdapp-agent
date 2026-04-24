@@ -90,7 +90,7 @@ export async function explore(): Promise<ExplorationOutput> {
     console.log('[explorer] modules.json missing — running single whole-dApp exploration');
     const mdPath = join(outDir, 'knowledge', 'index.md');
     const md = existsSync(mdPath) ? readFileSync(mdPath, 'utf-8') : '';
-    const task = exploreTaskFor({ id: 'module:whole', name: 'whole dApp', pageIds: [], componentIds: [], docSectionIds: [], apiEndpointIds: [], contractAddresses: [], constraintIds: [], triggeredByComponentIds: [], description: '', businessPurpose: '' } as DAppModule, md);
+    const task = exploreTaskFor({ id: 'module:whole', name: 'whole dApp', kind: 'primary', controlIds: [], relations: {}, pageIds: [], componentIds: [], docSectionIds: [], apiEndpointIds: [], contractAddresses: [], constraintIds: [], triggeredByComponentIds: [], description: '', businessPurpose: '' } as DAppModule, md);
     const r = await runExecutor({ task, dapp });
     perModule.push({
       moduleId: 'module:whole', moduleName: 'whole dApp',

@@ -2,18 +2,28 @@
 /**
  * Full pipeline runner — builds the agent's brain for a dApp from scratch.
  *
- *   npm run pipeline -- --url https://developer.avantisfi.com
+ *   npm run pipeline -- --url https://developer.avantisfi.com/trade
  *
- * Phases (all in-process, no subprocess fan-out):
- *   1. Crawler      crawl site, docs, APIs              → context + raw KG
- *   2. KG Builder   typed graph edges                   → graph.json
- *   3. Comprehender LLM archetype + flows + constraints → comprehension.json
- *   4. Spec Gen     module-by-module Playwright specs   → tests/*.spec.ts + fixtures/
+ * Phases (capability-centric rebuild):
+ *   1. Crawler              browser crawl of site + docs + APIs
+ *   2. KG Builder           typed graph from crawl (no LLM)
+ *   3. Comprehender         LLM archetype + overall summary (optional, reused)
+ *   4. Doc Structurer       LLM: parse each doc → {topics, rules}
+ *   5. Module Discovery     LLM: primary/cross-cutting/shared modules + cross-module edges
+ *   6. Control Clustering   LLM: DOM atoms → semantic Controls
+ *   7. Control Wiring       LLM: feedsInto/gates/affectedBy edges
+ *   8. Capability Derivation (no LLM) graph traversal → capabilities
+ *   9. Capability Naming    LLM: name each graph-derived capability
+ *  10. Edge Case Derivation (no LLM) constraints × capabilities → edge cases
+ *  11. Persona Assignment   LLM: tag capabilities with personas
+ *  12. Explorer (agent)     drives browser per module to validate/enrich
+ *  13. Markdown Emitter     no LLM — writes knowledge/*.md from all phases
+ *  14. Spec Gen             no LLM — one spec per capability × edge case
  *
- * Skip flags to reuse cached artifacts (cheap re-runs):
- *   --skip-crawl      reuse output/<host>/{context,scraped-data}.json
- *   --skip-comprehend reuse comprehension.json
- *   --skip-specgen    reuse tests/*.spec.ts
+ * Skip flags let you reuse cached artifacts:
+ *   --skip-crawl --skip-comprehend --skip-docs --skip-modules
+ *   --skip-controls --skip-wiring --skip-capabilities --skip-naming
+ *   --skip-edges --skip-personas --skip-explore --skip-markdown --skip-specgen
  */
 import 'dotenv/config';
 import { mkdirSync, existsSync, copyFileSync } from 'fs';
@@ -22,6 +32,15 @@ import { launchBrowser, closeBrowser } from '../src/core/browser-launch.js';
 import { createCrawlerNode } from '../src/pipeline/crawler.js';
 import { createKGBuilderNode } from '../src/pipeline/kg-builder.js';
 import { createComprehensionNode } from '../src/pipeline/comprehender.js';
+import { createDocStructurerNode } from '../src/pipeline/doc-structurer.js';
+import { createModuleDiscoveryNode } from '../src/pipeline/module-discovery.js';
+import { createControlClusteringNode } from '../src/pipeline/control-clustering.js';
+import { createControlWiringNode } from '../src/pipeline/control-wiring.js';
+import { createCapabilityDerivationNode } from '../src/pipeline/capability-derivation.js';
+import { createCapabilityNamingNode } from '../src/pipeline/capability-naming.js';
+import { createEdgeCaseDerivationNode } from '../src/pipeline/edge-case-derivation.js';
+import { createPersonaAssignmentNode } from '../src/pipeline/persona-assignment.js';
+import { createMarkdownEmitterNode } from '../src/pipeline/markdown-emitter.js';
 import { createComprehensionSpecGenNode } from '../src/pipeline/spec-gen.js';
 import { activeDApp } from '../src/config.js';
 import { emptyKnowledgeGraph } from '../src/agent/state.js';
@@ -74,7 +93,7 @@ async function main() {
   console.log(`━━━ Pipeline for ${dapp.name} (${url}) ━━━`);
   console.log(`Output: ${outputDir}`);
 
-  // Phase 1 — Crawler (needs browser)
+  // Phase 1 — Crawler
   if (!flag('skip-crawl')) {
     console.log('\n━━━ Phase 1: Crawler ━━━');
     const browserCtx = await launchBrowser({
@@ -85,99 +104,127 @@ async function main() {
     });
     try {
       const crawler = createCrawlerNode(browserCtx);
-      const patch = await crawler(state);
-      Object.assign(state, patch);
+      Object.assign(state, await crawler(state));
     } finally {
       await closeBrowser(browserCtx);
     }
   } else {
-    console.log('[pipeline] skipping crawl — reusing cached context.json');
+    console.log('[pipeline] --skip-crawl: reusing cached crawl');
   }
 
-  // Phase 2 — KG Builder (no LLM, no browser)
+  // Phase 2 — KG Builder
   console.log('\n━━━ Phase 2: KG Builder ━━━');
-  const kgBuilder = createKGBuilderNode();
-  Object.assign(state, await kgBuilder(state));
+  Object.assign(state, await createKGBuilderNode()(state));
 
-  // Phase 3 — Comprehender (LLM) — runs before segmenter so segmenter has archetype/summary context
+  // Phase 3 — Comprehender
   if (!flag('skip-comprehend')) {
     console.log('\n━━━ Phase 3: Comprehender ━━━');
-    const comp = createComprehensionNode();
-    Object.assign(state, await comp(state));
+    Object.assign(state, await createComprehensionNode()(state));
   } else {
-    console.log('[pipeline] skipping comprehend — reusing cached comprehension.json');
+    console.log('[pipeline] --skip-comprehend');
   }
 
-  // Phase 4 — Module Segmenter (LLM) — identifies business modules + links to docs/APIs/components
-  if (!flag('skip-segment')) {
-    console.log('\n━━━ Phase 4: Module Segmenter ━━━');
-    const { createModuleSegmenterNode } = await import('../src/pipeline/module-segmenter.js');
-    const seg = createModuleSegmenterNode();
-    Object.assign(state, await seg(state));
+  // Phase 4 — Doc Structurer
+  if (!flag('skip-docs')) {
+    console.log('\n━━━ Phase 4: Doc Structurer ━━━');
+    Object.assign(state, await createDocStructurerNode()(state));
   } else {
-    console.log('[pipeline] skipping module-segmenter — reusing cached modules.json');
+    console.log('[pipeline] --skip-docs');
   }
 
-  // Phase 5 — Markdown Emitter (no LLM) — writes knowledge/*.md for RAG
+  // Phase 5 — Module Discovery
+  if (!flag('skip-modules')) {
+    console.log('\n━━━ Phase 5: Module Discovery ━━━');
+    Object.assign(state, await createModuleDiscoveryNode()(state));
+  } else {
+    console.log('[pipeline] --skip-modules');
+  }
+
+  // Phase 6 — Control Clustering
+  if (!flag('skip-controls')) {
+    console.log('\n━━━ Phase 6: Control Clustering ━━━');
+    Object.assign(state, await createControlClusteringNode()(state));
+  } else {
+    console.log('[pipeline] --skip-controls');
+  }
+
+  // Phase 7 — Control Wiring
+  if (!flag('skip-wiring')) {
+    console.log('\n━━━ Phase 7: Control Wiring ━━━');
+    Object.assign(state, await createControlWiringNode()(state));
+  } else {
+    console.log('[pipeline] --skip-wiring');
+  }
+
+  // Phase 8 — Capability Derivation (no LLM)
+  if (!flag('skip-capabilities')) {
+    console.log('\n━━━ Phase 8: Capability Derivation ━━━');
+    Object.assign(state, await createCapabilityDerivationNode()(state));
+  } else {
+    console.log('[pipeline] --skip-capabilities');
+  }
+
+  // Phase 9 — Capability Naming (LLM labels)
+  if (!flag('skip-naming')) {
+    console.log('\n━━━ Phase 9: Capability Naming ━━━');
+    Object.assign(state, await createCapabilityNamingNode()(state));
+  } else {
+    console.log('[pipeline] --skip-naming');
+  }
+
+  // Phase 10 — Edge Case Derivation (no LLM)
+  if (!flag('skip-edges')) {
+    console.log('\n━━━ Phase 10: Edge Case Derivation ━━━');
+    Object.assign(state, await createEdgeCaseDerivationNode()(state));
+  } else {
+    console.log('[pipeline] --skip-edges');
+  }
+
+  // Phase 11 — Persona Assignment
+  if (!flag('skip-personas')) {
+    console.log('\n━━━ Phase 11: Persona Assignment ━━━');
+    Object.assign(state, await createPersonaAssignmentNode()(state));
+  } else {
+    console.log('[pipeline] --skip-personas');
+  }
+
+  // Phase 12 — Markdown Emit (no LLM)
   if (!flag('skip-markdown')) {
-    console.log('\n━━━ Phase 5: Markdown Emitter ━━━');
-    const { createMarkdownEmitterNode } = await import('../src/pipeline/markdown-emitter.js');
-    const md = createMarkdownEmitterNode();
-    Object.assign(state, await md(state));
+    console.log('\n━━━ Phase 12: Markdown Emitter ━━━');
+    await createMarkdownEmitterNode()(state);
+  } else {
+    console.log('[pipeline] --skip-markdown');
   }
 
-  // Phase 6 — Explorer (agent-driven, module-by-module KG enrichment)
+  // Phase 13 — Explorer (agent, per module)
   if (!flag('skip-explore') && !flag('skip-explorer')) {
-    console.log('\n━━━ Phase 6: Explorer (agent-driven, per module) ━━━');
+    console.log('\n━━━ Phase 13: Explorer (agent, per module) ━━━');
     const { explore } = await import('../src/pipeline/explorer.js');
     const out = await explore();
-    console.log(`[explorer] ${out.modulesExplored} modules explored · ${(out.totalDurationMs/1000).toFixed(1)}s · ${Math.round(out.totalTokens/1000)}k tok`);
+    console.log(`[explorer] ${out.modulesExplored} modules explored · ${(out.totalDurationMs / 1000).toFixed(1)}s · ${Math.round(out.totalTokens / 1000)}k tok`);
+    // Re-emit markdown in case explorer updated anything (currently it doesn't mutate state, but future enhancement)
+    if (!flag('skip-markdown-reemit')) {
+      console.log('\n━━━ Phase 13b: Markdown Re-emit (post-explorer) ━━━');
+      await createMarkdownEmitterNode()(state);
+    }
   } else {
-    console.log('[pipeline] skipping explore');
+    console.log('[pipeline] --skip-explore');
   }
 
-  // Phase 7 — Persona Mapper (LLM) — per-module user flows grouped by persona
-  if (!flag('skip-persona')) {
-    console.log('\n━━━ Phase 7: Persona Mapper ━━━');
-    const { createPersonaMapperNode } = await import('../src/pipeline/persona-mapper.js');
-    const pm = createPersonaMapperNode();
-    Object.assign(state, await pm(state));
-  } else {
-    console.log('[pipeline] skipping persona-mapper — reusing cached flows-by-persona.json');
-  }
-
-  // Phase 8 — Relationship Inferrer (no LLM) — leads_to_next + interacts_with
-  //          edges derived deterministically from UserFlow step ordering.
-  if (!flag('skip-edges')) {
-    console.log('\n━━━ Phase 8: Relationship Inferrer ━━━');
-    const { createRelationshipInferrerNode } = await import('../src/pipeline/relationship-inferrer.js');
-    const ri = createRelationshipInferrerNode();
-    Object.assign(state, await ri(state));
-  } else {
-    console.log('[pipeline] skipping relationship-inferrer');
-  }
-
-  // Phase 8b — Re-emit markdown with edges folded in (agent's RAG now sees
-  //            leads_to_next chains per module). No LLM. Cheap.
-  if (!flag('skip-markdown')) {
-    console.log('\n━━━ Phase 8b: Markdown Emitter (re-emit with edges) ━━━');
-    const { createMarkdownEmitterNode } = await import('../src/pipeline/markdown-emitter.js');
-    const md = createMarkdownEmitterNode();
-    Object.assign(state, await md(state));
-  }
-
-  // Phase 9 — Spec Gen (no LLM, deterministic)
+  // Phase 14 — Spec Gen (no LLM)
   if (!flag('skip-specgen')) {
-    console.log('\n━━━ Phase 9: Spec Generator ━━━');
-    const sg = createComprehensionSpecGenNode();
-    Object.assign(state, await sg(state));
+    console.log('\n━━━ Phase 14: Spec Generator ━━━');
+    Object.assign(state, await createComprehensionSpecGenNode()(state));
   } else {
-    console.log('[pipeline] skipping spec-gen — reusing tests/*.spec.ts');
+    console.log('[pipeline] --skip-specgen');
   }
 
   console.log(`\n━━━ Done in ${((Date.now() - started) / 1000).toFixed(1)}s ━━━`);
   console.log(`Artifacts: ${outputDir}`);
-  console.log(`Generated ${state.specFiles.length} spec file(s).`);
+  console.log(`Modules: ${state.modules?.length ?? 0}`);
+  console.log(`Controls: ${state.controls?.length ?? 0}`);
+  console.log(`Capabilities: ${state.capabilities?.length ?? 0}`);
+  console.log(`Specs: ${state.specFiles.length}`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

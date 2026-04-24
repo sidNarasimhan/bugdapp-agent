@@ -472,40 +472,178 @@ export interface TestResult {
   durationMs: number;
 }
 
-// ── Module layer (Phase A — hierarchical KG) ──
-// Produced by src/pipeline/module-segmenter.ts. Business-logic grouping of
-// pages + components + docs + APIs + contracts into modules that humans (and
-// the agent) actually think in. See ARCHITECTURE.md for the hierarchy.
+// ── Capability-centric data model (rebuild from user feedback) ──
+//
+// Hierarchy: dApp → Page → Module (kind=primary|cross-cutting|shared)
+//            → Capability (atomic user goal, DERIVED from graph traversal)
+//            → Control (semantic UI cluster) → Component (DOM atom).
+//
+// Flows are not invented by an LLM — they're graph paths from any control
+// to a SubmitCTA, enumerated by src/pipeline/capability-derivation.ts.
+// The LLM only clusters DOM atoms into Controls, infers control edges,
+// discovers modules, and labels capabilities. No flow invention.
+
+/** A top-level module can be primary (page-specific user area), cross-cutting
+ *  (appears on every page — nav, wallet), or shared (referenced from multiple
+ *  modules, e.g. an asset selector that both Trade and Portfolio use). */
+export type ModuleKind = 'primary' | 'cross-cutting' | 'shared';
+
+/** Cross-module edges — captures dApp topology. */
+export interface ModuleRelation {
+  /** depends_on — module's capabilities require another module first. */
+  dependsOn?: string[];
+  /** produces an entity (Trade produces Position). */
+  produces?: Array<{ entity: string; consumedBy: string[] }>;
+  /** consumed_by — module reads/operates on entities from another module. */
+  consumedBy?: Array<{ entity: string; producedBy: string[] }>;
+  /** navigates_to — this module has controls that open other modules. */
+  navigatesTo?: string[];
+  /** cross_refs — soft reference (Referral links to Trade). */
+  crossRefs?: string[];
+}
 
 export interface DAppModule {
-  /** Stable id, e.g. 'module:trade' or 'module:trade:zfp'. */
   id: string;
-  /** Display name, e.g. 'Zero-Fee Perps'. */
   name: string;
-  /** Parent module id if this is a sub-module. */
-  parentId?: string;
-  /** One-sentence description of what the user does here. */
+  kind: ModuleKind;
   description: string;
-  /** Why this module matters to the dApp's business. */
   businessPurpose: string;
-  /** Archetype if the module is a primary test surface (perps / swap / etc). */
   archetype?: string;
-  /** Pages that host this module. */
+  /** Pages that host this module (many-to-many — cross-cutting modules are on every page). */
   pageIds: string[];
-  /** Components that belong to this module (can appear in multiple modules for cross-cutting). */
+  /** DOM components that physically belong to this module (before clustering into Controls). */
   componentIds: string[];
-  /** DocSection ids that explain this module. */
+  /** Semantic controls within this module (produced by Control Clustering). */
+  controlIds: string[];
+  /** Doc section ids that explain this module. */
   docSectionIds: string[];
   /** API endpoint paths this module hits. */
   apiEndpointIds: string[];
-  /** Contract addresses (0x…, lowercased) this module interacts with. */
+  /** Contract addresses this module interacts with. */
   contractAddresses: string[];
   /** Constraint ids that apply to this module. */
   constraintIds: string[];
-  /** Components on OTHER modules that reveal this module when clicked. */
-  triggeredByComponentIds: string[];
-  /** Sub-modules nested under this one. */
+  /** Cross-module topology edges. */
+  relations: ModuleRelation;
+  /** Legacy — kept for back-compat during transition. */
+  parentId?: string;
+  triggeredByComponentIds?: string[];
   subModules?: DAppModule[];
+}
+
+// ── Control (semantic UI cluster — clusters DOM atoms) ──
+
+/** Semantic roles a Control can play. */
+export type ControlKind =
+  | 'input'              // free-form text/number input
+  | 'toggle'             // on/off switch
+  | 'radio'              // mutually exclusive options (Long/Short)
+  | 'tabs'               // mutually exclusive tabs (Market/Limit/Stop)
+  | 'percentage-picker'  // 10/25/50/75/100% buttons
+  | 'slider'             // range input (leverage)
+  | 'dropdown'           // select from list
+  | 'modal-selector'     // opens a modal with a picker (asset selector)
+  | 'submit-cta'         // the primary submit/action button
+  | 'link'               // navigation link
+  | 'tab'                // passive tab (view switcher, no form state)
+  | 'button';            // generic button (reveals modal, triggers side effect)
+
+export interface Control {
+  id: string;
+  moduleId: string;
+  name: string;                 // human-readable label ('Collateral Quick-Pick')
+  kind: ControlKind;
+  /** DOM components clustered under this control. */
+  componentIds: string[];
+  /** For multi-option controls: the option labels. */
+  options?: string[];
+  /** Unit (USDC, x, %, ETH…). */
+  unit?: string;
+  /** Free-form description of what user picks/enters. */
+  description: string;
+  // Wiring (produced by Control Wiring phase)
+  /** Controls this feeds data into (config → submit). */
+  feedsInto: string[];
+  /** Controls this gates (toggle → leverage). */
+  gates: string[];
+  /** Inverse of gates. */
+  affectedBy: string[];
+  /** If this is a reveal trigger, which module it opens. */
+  revealsModuleId?: string;
+  /** If this is a submit-cta, which capability it completes. */
+  submitsFor?: string[];
+}
+
+// ── Capability (atomic testable user goal) ──
+
+export interface CapabilityEdgeCase {
+  id: string;
+  name: string;
+  /** Which control is varied. */
+  controlId: string;
+  /** Invalid/boundary value. */
+  invalidValue: string;
+  /** Expected rejection text / terminal state. */
+  expectedRejection: string;
+  /** Constraint that generated this edge case. */
+  constraintId: string;
+}
+
+export interface Capability {
+  id: string;
+  moduleId: string;
+  /** LLM-generated display name ('Open ZFP Long on ETH-USD'). */
+  name: string;
+  /** User's goal. */
+  intent: string;
+  /** Preconditions derived from module.relations.dependsOn + constraints. */
+  preconditions: string[];
+  /** Controls traversed, in order (first → last, ending with submit-cta). */
+  controlPath: string[];
+  /** Option selections per control ({controlId: 'Long', …}). */
+  optionChoices: Record<string, string>;
+  /** Doc sections cited. */
+  docIds: string[];
+  /** Constraints enforced in this capability. */
+  constraintIds: string[];
+  /** What user verifies after. */
+  successCriteria: string;
+  /** Personas most relevant (LLM-tagged). */
+  personas: string[];
+  /** Boundary / invalid / adversarial variants. */
+  edgeCases: CapabilityEdgeCase[];
+  /** Archetype inherited from module. */
+  archetype?: string;
+  /** Risk class. */
+  riskClass: 'safe' | 'medium' | 'high';
+}
+
+// ── Constraints (first-class, structured from docs + crawler) ──
+
+export interface DAppConstraint {
+  id: string;
+  name: string;
+  /** Human-readable value, e.g. '100 USDC' / '75-250x' / 'market orders only'. */
+  value: string;
+  /** Numeric bounds if parseable — used by edge-case derivation. */
+  bounds?: { min?: number; max?: number; unit?: string };
+  scope: string;               // which module or capability
+  source: 'docs' | 'observed' | 'comprehension';
+  testImplication: string;
+  appliesToControlId?: string;
+  appliesToModuleId?: string;
+  appliesToCapabilityId?: string;
+}
+
+// ── Structured Docs (parsed per section) ──
+
+export interface StructuredDoc {
+  id: string;
+  title: string;
+  content: string;       // full raw content
+  topics: string[];      // LLM-extracted main topics
+  rules: string[];       // LLM-extracted rule statements
+  referencesModuleIds: string[];  // modules this doc is relevant to
 }
 
 // ── User flows (Phase C — persona-driven) ──
@@ -565,10 +703,18 @@ export interface AgentStateType {
   knowledgeGraph: KnowledgeGraph;
   graph: { nodes: GraphNode[]; edges: GraphEdge[] };
   crawlData: any;
-  /** Module hierarchy produced by module-segmenter. */
+  /** Module hierarchy produced by module-segmenter (legacy) or module-discovery (new). */
   modules?: DAppModule[];
-  /** Persona-driven user flows produced by persona-mapper. */
+  /** Persona-driven user flows produced by persona-mapper (legacy). */
   userFlows?: DAppUserFlow[];
+  /** Semantic controls produced by control-clustering. */
+  controls?: Control[];
+  /** Capabilities derived by graph traversal from controls. */
+  capabilities?: Capability[];
+  /** First-class constraints (from docs + observed). */
+  dappConstraints?: DAppConstraint[];
+  /** Structured docs from doc-structurer. */
+  structuredDocs?: StructuredDoc[];
   testPlan: TestPlan | null;
   specFiles: string[];
   testResults: TestResult[];

@@ -203,6 +203,9 @@ function validateAndClean(raw: any[], kg: KnowledgeGraph): DAppModule[] {
     return {
       id,
       name: String(m.name ?? 'Unnamed'),
+      kind: 'primary' as const,
+      controlIds: [],
+      relations: {},
       parentId,
       description: String(m.description ?? '').slice(0, 300),
       businessPurpose: String(m.businessPurpose ?? '').slice(0, 300),
