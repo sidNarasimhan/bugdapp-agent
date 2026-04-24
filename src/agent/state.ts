@@ -508,6 +508,43 @@ export interface DAppModule {
   subModules?: DAppModule[];
 }
 
+// ── User flows (Phase C — persona-driven) ──
+// Produced by src/pipeline/persona-mapper.ts. Intent-level user journeys
+// organized by persona, each mapped to real components from the module.
+// Drives module-by-module spec generation.
+
+export interface DAppUserFlowStep {
+  /** 1-sentence description of what the user does. */
+  description: string;
+  /** Components this step interacts with (must exist in the module). */
+  componentIds: string[];
+  /** Optional expected UI change or assertion. */
+  assertion?: string;
+}
+
+export interface DAppUserFlow {
+  /** Stable slug, e.g. 'flow:trade.zfp:open-long-market'. */
+  id: string;
+  /** Parent module id. */
+  moduleId: string;
+  /** Persona this flow serves (new-trader, power-user, adversarial, …). */
+  persona: string;
+  /** 1-sentence user goal. */
+  intent: string;
+  /** Prerequisites. Must include "wallet connected" for tx-involving flows. */
+  precondition: string;
+  /** Ordered steps. */
+  steps: DAppUserFlowStep[];
+  /** What the user verifies after. */
+  postcondition: string;
+  /** Archetype inherited from module. */
+  archetype: string;
+  /** Risk class (safe=no tx, medium=small tx, high=novel/large). */
+  riskClass: 'safe' | 'medium' | 'high';
+  /** Best-guess terminal state at submit time. */
+  expectedTerminal?: string;
+}
+
 // ── Plain pipeline state (no LangGraph) ──
 // Each pipeline node factory consumes+returns a subset of these fields.
 
@@ -530,6 +567,8 @@ export interface AgentStateType {
   crawlData: any;
   /** Module hierarchy produced by module-segmenter. */
   modules?: DAppModule[];
+  /** Persona-driven user flows produced by persona-mapper. */
+  userFlows?: DAppUserFlow[];
   testPlan: TestPlan | null;
   specFiles: string[];
   testResults: TestResult[];
