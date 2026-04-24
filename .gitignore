@@ -41,6 +41,9 @@ playwright/.cache/
 
 # Persistent Chromium profile (MM state, cookies, etc — each machine builds its own)
 .chromium-profile/
+.test-browser-profile/
+**/.chromium-profile/
+**/.test-browser-profile/
 
 # Smoke / throwaway scripts
 scripts/_smoke-*.ts
