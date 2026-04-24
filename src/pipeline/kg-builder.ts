@@ -18,6 +18,11 @@ export function createKGBuilderNode() {
 
     console.log('━━━ KG Builder: Constructing real graph ━━━');
 
+    if ((kg.pages?.length ?? 0) === 0 && (kg.components?.length ?? 0) === 0) {
+      console.log('[KG Builder] empty KG — refusing to overwrite graph.json. Skipping.');
+      return {};
+    }
+
     const graph = new DAppGraph();
 
     // ── A: Add page nodes and component nodes ──

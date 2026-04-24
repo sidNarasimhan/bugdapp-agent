@@ -29,7 +29,7 @@ import 'dotenv/config';
 import { mkdirSync, existsSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { launchBrowser, closeBrowser } from '../src/core/browser-launch.js';
-import { createCrawlerNode } from '../src/pipeline/crawler.js';
+import { createCrawlerNode, loadCachedCrawlAndKG } from '../src/pipeline/crawler.js';
 import { createKGBuilderNode } from '../src/pipeline/kg-builder.js';
 import { createComprehensionNode } from '../src/pipeline/comprehender.js';
 import { createDocStructurerNode } from '../src/pipeline/doc-structurer.js';
@@ -109,7 +109,15 @@ async function main() {
       await closeBrowser(browserCtx);
     }
   } else {
-    console.log('[pipeline] --skip-crawl: reusing cached crawl');
+    console.log('[pipeline] --skip-crawl: loading cached crawl from disk');
+    const cached = loadCachedCrawlAndKG(outputDir, url);
+    if (!cached) {
+      console.error('[pipeline] --skip-crawl requires cached context.json + scraped-data.json on disk; none found. Aborting.');
+      process.exit(1);
+    }
+    state.crawlData = cached.crawlData;
+    state.knowledgeGraph = cached.knowledgeGraph;
+    console.log(`[pipeline] cached KG: ${cached.knowledgeGraph.pages.length} pages, ${cached.knowledgeGraph.components.length} components, ${cached.knowledgeGraph.docSections?.length ?? 0} docs`);
   }
 
   // Phase 2 — KG Builder

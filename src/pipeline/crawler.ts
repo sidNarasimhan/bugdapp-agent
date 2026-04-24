@@ -65,6 +65,16 @@ export function createCrawlerNode(browserCtx: BrowserCtx) {
   };
 }
 
+/** Load cached crawl + build KG, no browser. Returns {crawlData, knowledgeGraph} or null if no cache. */
+export function loadCachedCrawlAndKG(outputDir: string, url: string): { crawlData: any; knowledgeGraph: KnowledgeGraph } | null {
+  const cachedScraped = join(outputDir, 'scraped-data.json');
+  const cachedContext = join(outputDir, 'context.json');
+  if (!existsSync(cachedScraped) || !existsSync(cachedContext)) return null;
+  const crawlData = loadCachedCrawl(outputDir);
+  const knowledgeGraph = buildKGFromCrawl(crawlData, url);
+  return { crawlData, knowledgeGraph };
+}
+
 function loadCachedCrawl(outputDir: string): any {
   const context = JSON.parse(readFileSync(join(outputDir, 'context.json'), 'utf-8'));
   const scrapedData = JSON.parse(readFileSync(join(outputDir, 'scraped-data.json'), 'utf-8'));

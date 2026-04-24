@@ -28,6 +28,12 @@ export function createModuleDiscoveryNode() {
     const comp = existsSync(compPath) ? JSON.parse(readFileSync(compPath, 'utf-8')) : null;
 
     console.log('━━━ Module Discovery: modules + kind + cross-module edges ━━━');
+
+    if ((kg.pages?.length ?? 0) === 0) {
+      console.log('[ModuleDiscovery] empty KG (0 pages) — refusing to hallucinate modules. Skipping.');
+      return {};
+    }
+
     const client = createOpenRouterClient(config.apiKey || process.env.OPENROUTER_API_KEY);
 
     const digest = buildDigest(kg, docs, comp);
