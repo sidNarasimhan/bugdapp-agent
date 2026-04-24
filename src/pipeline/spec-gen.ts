@@ -142,12 +142,24 @@ function emitCapabilitySpec(
   url: string,
 ): string {
   const lines: string[] = [];
+  // Detect modal-selector axis (typically asset selector) — one sample asset per
+  // group so WTI, EUR/USD, AAPL, XAU, BTC all get exercised without exploding.
+  const modalCtrl = cap.controlPath
+    .map(cid => controlById.get(cid))
+    .find(c => c?.kind === 'modal-selector' && Array.isArray(c?.options) && (c?.options?.length ?? 0) > 1) as Control | undefined;
+  const testRows: Array<{ asset?: string }> = modalCtrl?.options?.length
+    ? sampleTestRows(modalCtrl.options, kg).map(asset => ({ asset }))
+    : [{}];
+
   lines.push(`// Auto-generated from capability ${cap.id}`);
   lines.push(`// Module: ${mod.name} (${mod.kind}${cap.archetype ? `, ${cap.archetype}` : ''})`);
   lines.push(`// Capability: ${cap.name}`);
   lines.push(`// Intent: ${cap.intent}`);
   lines.push(`// Personas: ${cap.personas.join(', ')}`);
   lines.push(`// Risk: ${cap.riskClass}`);
+  if (testRows.length > 1) {
+    lines.push(`// Data-driven: ${testRows.length} asset rows — ${testRows.map(r => r.asset).join(', ')}`);
+  }
   lines.push('');
   lines.push(`import { test, expect, connectWallet, raceConfirmTransaction, verifyPage, emitFindingIfNeeded } from '../../fixtures/wallet.fixture';`);
   lines.push('');
@@ -169,34 +181,40 @@ function emitCapabilitySpec(
   lines.push(`  });`);
   lines.push('');
 
-  // Happy path
-  lines.push(`  test(${JSON.stringify(`[${cap.personas.join('/')}] ${cap.intent || cap.name}`)}, async ({ page }) => {`);
-  lines.push(`    // Rationale: ${cap.intent || cap.name}`);
-  if (cap.successCriteria) lines.push(`    // Expected: ${cap.successCriteria}`);
-  if (cap.preconditions.length) lines.push(`    // Preconditions: ${cap.preconditions.join('; ')}`);
-  lines.push('');
-  for (let i = 0; i < cap.controlPath.length; i++) {
-    const cid = cap.controlPath[i];
-    const ctrl = controlById.get(cid); if (!ctrl) continue;
-    const choice = cap.optionChoices[cid];
-    lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
-    for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
-    lines.push(`    await page.waitForTimeout(500);`);
+  // Happy path — one test per data row (asset). If no modal-selector in path, 1 row.
+  for (const row of testRows) {
+    const titleSuffix = row.asset ? ` on ${row.asset}` : '';
+    lines.push(`  test(${JSON.stringify(`[${cap.personas.join('/')}] ${cap.intent || cap.name}${titleSuffix}`)}, async ({ page }) => {`);
+    lines.push(`    // Rationale: ${cap.intent || cap.name}`);
+    if (row.asset) lines.push(`    // Asset row: ${row.asset}`);
+    if (cap.successCriteria) lines.push(`    // Expected: ${cap.successCriteria}`);
+    if (cap.preconditions.length) lines.push(`    // Preconditions: ${cap.preconditions.join('; ')}`);
+    lines.push('');
+    for (let i = 0; i < cap.controlPath.length; i++) {
+      const cid = cap.controlPath[i];
+      const ctrl = controlById.get(cid); if (!ctrl) continue;
+      // For the modal-selector on this path, use the row's asset as the choice
+      let choice = cap.optionChoices[cid];
+      if (ctrl.kind === 'modal-selector' && row.asset) choice = row.asset;
+      lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
+      for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
+      lines.push(`    await page.waitForTimeout(500);`);
+    }
+    // Wallet confirm + on-chain verify for tx-involving
+    lines.push('');
+    lines.push(`    await page.waitForTimeout(1500);`);
+    if (cap.riskClass !== 'safe') {
+      lines.push(`    try { await raceConfirmTransaction(page.context(), page); } catch {}`);
+      lines.push(`    await page.waitForTimeout(3000);`);
+      lines.push(`    try {`);
+      lines.push(`      const result = await verifyPage(page, { url: DAPP_URL, archetype: ${JSON.stringify(profile.archetype)}, chainId: DAPP_CHAIN_ID });`);
+      lines.push(`      const dir = await emitFindingIfNeeded(result);`);
+      lines.push(`      if (dir) console.log('[chain] finding bundle:', dir);`);
+      lines.push(`    } catch (err) { console.warn('[chain]', (err as Error).message); }`);
+    }
+    lines.push(`  });`);
+    lines.push('');
   }
-  // Wallet confirm + on-chain verify for tx-involving
-  lines.push('');
-  lines.push(`    await page.waitForTimeout(1500);`);
-  if (cap.riskClass !== 'safe') {
-    lines.push(`    try { await raceConfirmTransaction(page.context(), page); } catch {}`);
-    lines.push(`    await page.waitForTimeout(3000);`);
-    lines.push(`    try {`);
-    lines.push(`      const result = await verifyPage(page, { url: DAPP_URL, archetype: ${JSON.stringify(profile.archetype)}, chainId: DAPP_CHAIN_ID });`);
-    lines.push(`      const dir = await emitFindingIfNeeded(result);`);
-    lines.push(`      if (dir) console.log('[chain] finding bundle:', dir);`);
-    lines.push(`    } catch (err) { console.warn('[chain]', (err as Error).message); }`);
-  }
-  lines.push(`  });`);
-  lines.push('');
 
   // Edge cases — one test per case, flip the targeted control
   for (const ec of cap.edgeCases.slice(0, 12)) {
@@ -237,6 +255,59 @@ function emitCapabilitySpec(
 }
 
 // ── Control → Playwright code ──────────────────────────────────────────
+
+/** Pick a coverage-balanced sample of assets for data-driven test rows.
+ *  For small groups (FOREX, EQUITIES, COMMODITIES, METAL) we sample up to 2
+ *  flagship assets by name (BTCUSD/ETHUSD for crypto, EURUSD/USDJPY for FX,
+ *  WTIUSD/BRENTUSD for oil, XAUUSD/XAGUSD for metals, AAPL/SPYUSD for equity).
+ *  This guarantees a commodity test row actually names WTI, not just XAG.
+ *  Falls back to Control.options if kg.assets is empty. */
+function sampleTestRows(controlOptions: string[], kg: KnowledgeGraph): string[] {
+  const assets = kg.assets ?? [];
+  if (assets.length === 0) return controlOptions.slice(0, 6);
+  const symByGroup = new Map<string, string[]>();
+  for (const a of assets) {
+    const sym = a.symbol.replace(/-/g, '');
+    if (!symByGroup.has(a.group)) symByGroup.set(a.group, []);
+    symByGroup.get(a.group)!.push(sym);
+  }
+  const flagships: Record<string, string[]> = {
+    CRYPTO1: ['BTCUSD', 'ETHUSD'],
+    FOREX: ['EURUSD', 'USDJPY'],
+    EQUITIES: ['AAPL', 'SPYUSD', 'NVDA'],
+    COMMODITIES: ['WTIUSD', 'BRENTUSD'],
+    CRYPTO2: ['SOLUSD'],
+    CRYPTO3: ['DOGEUSD'],
+    CRYPTO4: ['SHIBUSD'],
+  };
+  const picked: string[] = [];
+  for (const [group, prefs] of Object.entries(flagships)) {
+    const available = symByGroup.get(group) ?? [];
+    for (const pref of prefs) {
+      if (available.includes(pref) && !picked.includes(pref)) {
+        picked.push(pref);
+        break;  // one per group in first pass
+      }
+    }
+  }
+  // Second pass: fill second flagship per group if still under budget
+  for (const [group, prefs] of Object.entries(flagships)) {
+    if (picked.length >= 10) break;
+    const available = symByGroup.get(group) ?? [];
+    for (const pref of prefs) {
+      if (available.includes(pref) && !picked.includes(pref)) {
+        picked.push(pref);
+        break;
+      }
+    }
+  }
+  // Fallback fill: any first-in-group not yet picked
+  for (const list of symByGroup.values()) {
+    if (picked.length >= 10) break;
+    if (list[0] && !picked.includes(list[0])) picked.push(list[0]);
+  }
+  return picked.slice(0, 10);
+}
 
 function describeControl(ctrl: Control, choice: string | undefined): string {
   if (choice !== undefined) return `${ctrl.name} → ${choice}`;

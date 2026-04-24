@@ -16,7 +16,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createOpenRouterClient } from '../core/llm.js';
-import type { AgentStateType, Control, ControlKind, DAppModule, KnowledgeGraph } from '../agent/state.js';
+import type { AgentStateType, Control, ControlKind, DAppModule, KGAsset, KnowledgeGraph } from '../agent/state.js';
 
 const MODEL = process.env.CONTROL_CLUSTERING_MODEL ?? 'anthropic/claude-sonnet-4.5';
 
@@ -62,8 +62,17 @@ export function createControlClusteringNode() {
       }
     }
 
-    // Synth sibling options for known patterns where crawl captured only one visible option
-    synthSiblingOptions(allControls, modules);
+    // Hydrate asset-selector controls from kg.assets — the KG's first-class
+    // asset list (populated by the crawler from network price feeds, already
+    // includes WTI, XAU, EUR/USD, AAPL, etc). Falls back to canonical siblings
+    // for other radio/tabs/modal axes that the DOM only revealed the active
+    // option for.
+    if (kg.assets?.length) {
+      const byGroup = kg.assets.reduce((m, a) => { m[a.group] = (m[a.group] ?? 0) + 1; return m; }, {} as Record<string, number>);
+      const summary = Object.entries(byGroup).map(([g, n]) => `${g}:${n}`).join(', ');
+      console.log(`[ControlClustering] hydrating from kg.assets: ${kg.assets.length} total (${summary})`);
+    }
+    synthSiblingOptions(allControls, modules, kg.assets ?? []);
 
     // Back-fill module.controlIds with the newly created controls
     const byModule = new Map<string, string[]>();
@@ -180,10 +189,43 @@ function slug(s: string): string {
  * modal-selectors. Infer the canonical siblings so capability-derivation can explore them.
  * Purely domain-aware guesses; never invents options for things with already-multiple options.
  */
-function synthSiblingOptions(controls: Control[], modules: DAppModule[]): void {
+function synthSiblingOptions(controls: Control[], modules: DAppModule[], kgAssets: KGAsset[]): void {
   const moduleById = new Map(modules.map(m => [m.id, m]));
+
+  // Flatten kg.assets with cross-group leaders first so downstream variant
+  // sampling reaches every asset class within the first few picks.
+  const assetsByGroup = new Map<string, KGAsset[]>();
+  for (const a of kgAssets) {
+    if (!assetsByGroup.has(a.group)) assetsByGroup.set(a.group, []);
+    assetsByGroup.get(a.group)!.push(a);
+  }
+  const canonicalAssetList: string[] = [];
+  const seenSym = new Set<string>();
+  // Round 1: one per group in priority order
+  const groupOrder = ['CRYPTO1', 'FOREX', 'EQUITIES', 'COMMODITIES', 'CRYPTO2', 'CRYPTO3', 'CRYPTO4'];
+  for (const g of groupOrder) {
+    for (const a of (assetsByGroup.get(g) ?? []).slice(0, 1)) {
+      const sym = displaySymbol(a.symbol);
+      if (!seenSym.has(sym)) { seenSym.add(sym); canonicalAssetList.push(sym); }
+    }
+  }
+  // Round 2: the rest
+  for (const g of groupOrder) {
+    for (const a of (assetsByGroup.get(g) ?? []).slice(1)) {
+      const sym = displaySymbol(a.symbol);
+      if (!seenSym.has(sym)) { seenSym.add(sym); canonicalAssetList.push(sym); }
+    }
+  }
+  // Unknown groups
+  for (const [g, list] of assetsByGroup) {
+    if (groupOrder.includes(g)) continue;
+    for (const a of list) {
+      const sym = displaySymbol(a.symbol);
+      if (!seenSym.has(sym)) { seenSym.add(sym); canonicalAssetList.push(sym); }
+    }
+  }
+
   for (const c of controls) {
-    if (Array.isArray(c.options) && c.options.length > 1) continue;
     const existing = (c.options ?? [])[0]?.toLowerCase() ?? '';
     const name = c.name.toLowerCase();
     const mod = moduleById.get(c.moduleId);
@@ -193,28 +235,34 @@ function synthSiblingOptions(controls: Control[], modules: DAppModule[]): void {
     if (c.kind === 'radio' && archetype === 'perps' &&
         /direction|side|position/.test(name) &&
         (existing === 'long' || existing === 'short' || existing === '')) {
-      c.options = uniqueKeepFirst(['Long', 'Short'], c.options?.[0]);
+      if (!(Array.isArray(c.options) && c.options.length > 1))
+        c.options = uniqueKeepFirst(['Long', 'Short'], c.options?.[0]);
       continue;
     }
     // Order type (perps/swap): Market / Limit / Stop
     if ((c.kind === 'tabs' || c.kind === 'radio') &&
         (archetype === 'perps' || archetype === 'swap') &&
         /order|market|limit|type/.test(name)) {
-      c.options = uniqueKeepFirst(['Market', 'Limit', 'Stop'], c.options?.[0]);
+      if (!(Array.isArray(c.options) && c.options.length > 1))
+        c.options = uniqueKeepFirst(['Market', 'Limit', 'Stop'], c.options?.[0]);
       continue;
     }
-    // Asset selector (perps/swap): add canonical siblings alongside the detected one
+    // Asset selector: hydrate from the KG's canonical asset list
     if (c.kind === 'modal-selector' && (archetype === 'perps' || archetype === 'swap') &&
-        /asset|pair|token/.test(name) &&
-        (c.options?.length ?? 0) <= 1) {
+        /asset|pair|token/.test(name)) {
       const detected = c.options?.[0];
-      const canon = archetype === 'perps'
-        ? ['BTCUSD', 'ETHUSD', 'SOLUSD']
-        : ['ETH', 'USDC', 'USDT'];
-      c.options = uniqueKeepFirst(canon, detected);
+      const full = canonicalAssetList.length > 0
+        ? canonicalAssetList
+        : (archetype === 'perps' ? ['BTCUSD', 'ETHUSD', 'SOLUSD'] : ['ETH', 'USDC', 'USDT']);
+      c.options = uniqueKeepFirst(full, detected);
       continue;
     }
   }
+}
+
+/** Avantis UI shows BTCUSD not BTC-USD. Normalise feed symbols. */
+function displaySymbol(s: string): string {
+  return s.replace(/-/g, '');
 }
 
 function uniqueKeepFirst(canon: string[], detected?: string): string[] {

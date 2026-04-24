@@ -23,10 +23,10 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { AgentStateType, Capability, Control, DAppModule } from '../agent/state.js';
 
-const MAX_VARIANTS_PER_SUBMIT = 48;  // bigger budget — real trade forms have 5-6 binary/ternary axes
+const MAX_VARIANTS_PER_SUBMIT = 80;  // bigger budget — real forms have 5-6 axes, asset universe spans 5 groups
 const MAX_OPTIONS_SMALL = 3;         // picker with 3 options → expand all
 const MAX_OPTIONS_MEDIUM = 5;        // percentage-picker 5 options → keep all
-const MAX_OPTIONS_LARGE_MODAL = 2;   // modal-selector with many pairs → pick 2 canonical (first two)
+const MAX_OPTIONS_LARGE_MODAL = 6;   // modal-selector with big option universe → pick 6 (Crypto+FX+Eq+Commod+Metal+extra)
 
 export function createCapabilityDerivationNode() {
   return async (state: AgentStateType): Promise<Partial<AgentStateType>> => {
@@ -194,20 +194,21 @@ function topoSort(controls: Control[], byId: Map<string, Control>): Control[] {
   return out;
 }
 
-/** Enumerate Cartesian product of multi-option axes PLUS toggle axes (on/off).
- *  Budget per axis is kind-dependent; radios/tabs/toggles expand fully, pickers to 4,
- *  modal-selectors to 2 canonical pairs. Prioritizes the canonical first option across
- *  all axes as variant #1, then varies axis-by-axis. */
+/** Enumerate Cartesian product of STRUCTURAL axes only. Modal-selectors are
+ *  excluded — asset selection is a test DATA parameter, not a capability shape.
+ *  Long/Short×Market/Limit/Stop×ZFP×TPSL×Collateral = the legitimate shape space.
+ *  The full asset universe stays on the Control and is consumed by spec-gen
+ *  as data-driven test rows. */
 function enumerateVariants(controls: Control[]): Record<string, string>[] {
   const axes: Array<{ id: string; options: string[] }> = [];
   for (const c of controls) {
     const opts = Array.isArray(c.options) ? c.options : [];
     const kind = c.kind;
+    if (kind === 'modal-selector') continue; // handled as data parameter, not shape axis
     if (opts.length > 1) {
       let cap: number;
       if (kind === 'radio' || kind === 'tabs' || kind === 'toggle') cap = MAX_OPTIONS_SMALL;
       else if (kind === 'percentage-picker' || kind === 'dropdown') cap = MAX_OPTIONS_MEDIUM;
-      else if (kind === 'modal-selector') cap = MAX_OPTIONS_LARGE_MODAL;
       else cap = MAX_OPTIONS_SMALL;
       axes.push({ id: c.id, options: opts.slice(0, cap) });
     } else if (kind === 'toggle' && opts.length === 0) {
