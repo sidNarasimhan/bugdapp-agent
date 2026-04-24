@@ -9,8 +9,8 @@
  *   - any `// Expected: ...` comment
  * and pass these to DeepSeek so matching is based on intent, not filenames.
  */
-import { readdirSync, readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
+import { join, relative } from 'path';
 import { createOpenRouterClient } from '../core/llm.js';
 import { activeDApp, outputDir, type ActiveDApp } from '../config.js';
 
@@ -32,16 +32,32 @@ export interface SpecDescriptor {
   tests: Array<{ title: string; rationale?: string; expected?: string }>;
 }
 
+/** Recursively collect all .spec.ts under tests/ (excluding _legacy/). */
+function walkSpecs(dir: string, root: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    if (entry === '_legacy' || entry === 'node_modules') continue;
+    const full = join(dir, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) {
+      out.push(...walkSpecs(full, root));
+    } else if (entry.endsWith('.spec.ts')) {
+      // Return path relative to the tests dir, with forward slashes for portability
+      out.push(relative(root, full).split(/[\\/]/).join('/'));
+    }
+  }
+  return out;
+}
+
 export function listSpecs(dapp: ActiveDApp = activeDApp()): string[] {
   const testsDir = join(outputDir(dapp), 'tests');
-  if (!existsSync(testsDir)) return [];
-  return readdirSync(testsDir).filter(f => f.endsWith('.spec.ts'));
+  return walkSpecs(testsDir, testsDir);
 }
 
 export function describeSpecs(dapp: ActiveDApp = activeDApp()): SpecDescriptor[] {
   const testsDir = join(outputDir(dapp), 'tests');
-  if (!existsSync(testsDir)) return [];
-  const files = readdirSync(testsDir).filter(f => f.endsWith('.spec.ts'));
+  const files = walkSpecs(testsDir, testsDir);
   const out: SpecDescriptor[] = [];
   for (const file of files) {
     const src = (() => { try { return readFileSync(join(testsDir, file), 'utf-8'); } catch { return ''; } })();

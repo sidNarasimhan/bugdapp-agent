@@ -117,9 +117,17 @@ interface PwRunResult {
   results: any | null;
 }
 
-function runPlaywright(outputDir: string, emit: (l: string) => void, grep?: string): Promise<PwRunResult> {
+function runPlaywright(outputDir: string, emit: (l: string) => void, filter?: string): Promise<PwRunResult> {
   const args = ['playwright', 'test', '--reporter=json'];
-  if (grep) args.push(`--grep=${grep}`);
+  if (filter) {
+    // Treat filter as a path when it looks like one (new module-organized
+    // specs), else as a --grep pattern (matches test title substring).
+    if (/\.spec\.ts$/.test(filter) || filter.includes('/')) {
+      args.push(filter);
+    } else {
+      args.push(`--grep=${filter}`);
+    }
+  }
 
   return new Promise((resolve) => {
     const child = spawn('npx', args, { cwd: outputDir, shell: true });

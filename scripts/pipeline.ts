@@ -146,9 +146,20 @@ async function main() {
     console.log('[pipeline] skipping persona-mapper — reusing cached flows-by-persona.json');
   }
 
-  // Phase 8 — Spec Gen (no LLM, deterministic)
+  // Phase 8 — Relationship Inferrer (no LLM) — leads_to_next + interacts_with
+  //          edges derived deterministically from UserFlow step ordering.
+  if (!flag('skip-edges')) {
+    console.log('\n━━━ Phase 8: Relationship Inferrer ━━━');
+    const { createRelationshipInferrerNode } = await import('../src/pipeline/relationship-inferrer.js');
+    const ri = createRelationshipInferrerNode();
+    Object.assign(state, await ri(state));
+  } else {
+    console.log('[pipeline] skipping relationship-inferrer');
+  }
+
+  // Phase 9 — Spec Gen (no LLM, deterministic)
   if (!flag('skip-specgen')) {
-    console.log('\n━━━ Phase 8: Spec Generator ━━━');
+    console.log('\n━━━ Phase 9: Spec Generator ━━━');
     const sg = createComprehensionSpecGenNode();
     Object.assign(state, await sg(state));
   } else {
