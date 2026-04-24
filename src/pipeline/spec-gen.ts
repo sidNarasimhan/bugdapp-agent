@@ -471,7 +471,7 @@ export function createComprehensionSpecGenNode() {
       const dst = join(f.includes('fixture') ? fixturesDir : config.outputDir, f);
       try { if (existsSync(src)) copyFileSync(src, dst); } catch {}
     }
-    const chainSrc = join(projectRoot, 'src', 'agent', 'chain');
+    const chainSrc = join(projectRoot, 'src', 'chain');
     const chainDst = join(fixturesDir, 'chain');
     if (existsSync(chainSrc)) {
       mkdirSync(chainDst, { recursive: true });

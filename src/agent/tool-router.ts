@@ -12,6 +12,8 @@
 import type { BrowserCtx, ToolDefinition, ToolCallResult, SnapshotRef } from '../types.js';
 import { browserToolDefs, executeBrowserTool } from '../core/browser-tools.js';
 import { walletToolDefs, executeWalletTool } from '../core/wallet-tools.js';
+import { fetchAndDecodeReceipt } from '../chain/receipt.js';
+import { activeDApp } from '../config.js';
 
 export const agentControlTools: ToolDefinition[] = [
   {
@@ -42,6 +44,23 @@ export const agentControlTools: ToolDefinition[] = [
         },
       },
       required: ['reason'],
+    },
+  },
+  {
+    name: 'wallet_verify_tx',
+    description:
+      'Fetch and decode a transaction receipt on-chain via viem. Call this AFTER wallet_confirm_transaction (and after the UI shows the tx was accepted) to prove the tx actually succeeded and observe its events. Required before task_complete when a transaction was submitted.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tx_hash: { type: 'string', description: 'The 0x-prefixed 66-char transaction hash' },
+        chain_id: {
+          type: 'number',
+          description: 'EVM chain id. Defaults to the active dApp chain (e.g. 8453 for Base).',
+        },
+        timeout_ms: { type: 'number', description: 'Max polling time. Default 60000 (60s).' },
+      },
+      required: ['tx_hash'],
     },
   },
 ];
@@ -85,6 +104,45 @@ export async function routeToolCall(
         terminalState: input.terminal_state ? String(input.terminal_state) : undefined,
       },
     };
+  }
+
+  if (name === 'wallet_verify_tx') {
+    const txHash = String(input.tx_hash ?? '').trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+      return { success: false, output: `Invalid tx_hash (expected 0x + 64 hex chars). Got: ${txHash}`, toolName: name };
+    }
+    const chainId = typeof input.chain_id === 'number' ? input.chain_id : activeDApp().chain.id;
+    const timeoutMs = typeof input.timeout_ms === 'number' ? input.timeout_ms : 60_000;
+    try {
+      const receipt = await fetchAndDecodeReceipt(chainId, txHash as `0x${string}`, { timeoutMs });
+      const events = receipt.events.map(e => ({
+        name: e.name,
+        address: e.address,
+        args: e.args,
+      }));
+      const summary = {
+        status: receipt.status,
+        blockNumber: String(receipt.blockNumber),
+        gasUsed: String(receipt.gasUsed),
+        from: receipt.from,
+        to: receipt.to,
+        eventCount: events.length,
+        events: events.slice(0, 20),
+        rawLogCount: receipt.rawLogs.length,
+      };
+      return {
+        success: receipt.status === 'success',
+        output: JSON.stringify(summary, null, 2),
+        toolName: name,
+        code: `// verify tx ${txHash} on chain ${chainId} — status=${receipt.status}`,
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        output: `wallet_verify_tx failed: ${e?.message ?? e}`,
+        toolName: name,
+      };
+    }
   }
 
   if (name.startsWith('browser_')) {

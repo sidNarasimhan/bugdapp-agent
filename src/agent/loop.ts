@@ -70,6 +70,7 @@ function systemPrompt(dapp: ActiveDApp, knowledge: string): string {
     '6. If the state classifier or a CTA label indicates a blocker (insufficient balance, wrong network, unconnected), call task_failed with a clear reason — do not loop trying to brute-force past it.',
     '7. Be terse. Each assistant turn should be a short plan of the next 1–2 actions, then the tool call. No essays.',
     '8. The KNOWLEDGE block below comes from the crawler + comprehension pass. Trust it over your own assumptions — it reflects what the dApp\'s real UI + docs say. If a constraint contradicts the user\'s task, surface the conflict via task_failed rather than brute-forcing.',
+    '9. ON-CHAIN VERIFICATION — REQUIRED when a transaction was submitted: after wallet_confirm_transaction, capture the tx hash from the UI (toast, portfolio entry, etherscan link). Then call wallet_verify_tx with that hash. Only call task_complete after you see status:"success" AND at least one meaningful event (e.g. PositionOpened, Transfer, Swap). If status:"reverted" or the expected event is missing, call task_failed with the decoded revert reason.',
     '',
     dAppContextPrompt(dapp),
     '',
