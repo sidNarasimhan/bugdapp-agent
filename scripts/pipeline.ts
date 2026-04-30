@@ -4,34 +4,51 @@
  *
  *   npm run pipeline -- --url https://developer.avantisfi.com/trade
  *
- * Phases:
- *    1.  Crawler                 browser crawl of site + docs + APIs
- *    2.  Comprehender            LLM archetype + overall summary (cached)
- *    3.  Doc Structurer          LLM: parse each doc → {topics, rules}
- *    4.  Module Discovery        LLM: primary/cross-cutting/shared modules + cross-module edges
- *    5.  Control Clustering      LLM: DOM atoms → semantic Controls
- *    6.  Control Wiring          LLM: feedsInto / gates / affectedBy edges
- *    7.  Capability Derivation   no LLM — graph traversal → capabilities
- *    8.  Capability Naming       LLM labels per derived capability
- *    9.  Edge Case Derivation    no LLM — constraints × capabilities → edge cases (+ heuristic personas)
- *    11–15.  KG Assemble        ONE phase orchestrating:
- *                                  migrate (no LLM)        v1+sidecars → skeleton kg-v2
- *                                  tech-binder (no LLM)    bind api/contract/event onto actions
- *                                  explorer-ingest (no LLM) fold runtime-observed deltas in
- *                                  state-extractor (LLM)   replace skeletons with named state machines
- *                                  cleanup (no LLM)        drop superseded skeletons
- *                                  validator (no LLM)      assertion-completeness rules
- *    16. Markdown Emitter        no LLM — writes knowledge/*.md
- *    17. Explorer (agent)        drives browser per module → exploration.json → consumed by
- *                                explorer-ingest in next pipeline run
- *    18. Spec Gen                no LLM — one spec per capability × edge case (consumes kg-v2)
+ * Pipeline (10 phases, agent loop CLOSED in one run):
  *
- * Skip flags let you reuse cached artifacts:
+ *   ─ CRAWL ──────────────────────────────────────────────────
+ *    1.  Crawler                       browser, no LLM
+ *
+ *   ─ UNDERSTAND (LLM, dApp-level) ───────────────────────────
+ *    2a. Comprehender                  archetype + overall summary
+ *    2b. Doc Structurer                each doc → {topics, rules}
+ *
+ *   ─ STRUCTURE (LLM, per-module) ────────────────────────────
+ *    3a. Module Discovery
+ *    3b. Control Clustering
+ *    3c. Control Wiring
+ *
+ *   ─ DERIVE (no LLM, deterministic + 1 LLM naming pass) ─────
+ *    4a. Capability Derivation         graph traversal
+ *    4b. Capability Naming             LLM labels (per module batched)
+ *    4c. Edge Case Derivation          constraints × capabilities + heuristic personas
+ *
+ *   ─ ASSEMBLE BRAIN (skeleton, no LLM) ──────────────────────
+ *    5.  kg-migrate + tech-binder      → queryable skeleton kg-v2
+ *
+ *   ─ MARKDOWN (no LLM, gives explorer agent context) ────────
+ *    6.  Markdown Emitter (preliminary)
+ *
+ *   ─ EXPLORE (LLM, live agent) ──────────────────────────────
+ *    7.  Explorer agent walks the skeleton brain per module
+ *        → exploration.json (THIS run, consumed in Phase 8)
+ *
+ *   ─ FINALIZE BRAIN (no LLM + 1 LLM naming pass) ────────────
+ *    8a. explorer-ingest               this-run deltas → kg-v2
+ *    8b. state-extractor               LLM names state machines per flow
+ *                                      (sees explorer deltas in prompt)
+ *    8c. kg-cleanup + kg-validator
+ *
+ *   ─ EMIT ───────────────────────────────────────────────────
+ *    9.  Markdown re-emit (post-finalize)
+ *    10. Spec Gen                      consumes finalized kg-v2 → tests/<m>/*.spec.ts
+ *
+ * Skip flags:
  *   --skip-crawl --skip-comprehend --skip-docs --skip-modules
  *   --skip-controls --skip-wiring --skip-capabilities --skip-naming
- *   --skip-edges --skip-assemble (whole assemble) OR finer-grained:
+ *   --skip-edges --skip-assemble (both) OR --skip-assemble-skeleton / --skip-assemble-finalize
  *   --skip-explorer-ingest --skip-states --skip-validate
- *   --skip-explore --skip-markdown --skip-specgen
+ *   --skip-explore --skip-markdown --skip-markdown-reemit --skip-specgen
  */
 import 'dotenv/config';
 import { mkdirSync, existsSync, copyFileSync } from 'fs';
@@ -46,7 +63,7 @@ import { createControlWiringNode } from '../src/pipeline/control-wiring.js';
 import { createCapabilityDerivationNode } from '../src/pipeline/capability-derivation.js';
 import { createCapabilityNamingNode } from '../src/pipeline/capability-naming.js';
 import { createEdgeCaseDerivationNode } from '../src/pipeline/edge-case-derivation.js';
-import { createKGAssembleNode } from '../src/pipeline/kg-assemble.js';
+import { createKGAssembleSkeletonNode, createKGAssembleFinalizeNode } from '../src/pipeline/kg-assemble.js';
 import { createMarkdownEmitterNode } from '../src/pipeline/markdown-emitter.js';
 import { createComprehensionSpecGenNode } from '../src/pipeline/spec-gen.js';
 import { activeDApp } from '../src/config.js';
@@ -190,47 +207,65 @@ async function main() {
   // Edge Case Derivation. Personas were decoration only; the LLM call added
   // marginal polish over the same fallback rules already in place.)
 
-  // Phase 11–15 — KG Assemble (one orchestrator: migrate + tech-binder +
-  // explorer-ingest + state-extractor + cleanup + validator). State-extractor
-  // is the only LLM step; rest are deterministic. Each sub-step has its own
-  // skip flag so partial reruns are cheap.
-  if (!flag('skip-assemble')) {
-    console.log('\n━━━ Phase 11–15: KG Assemble ━━━');
-    Object.assign(state, await createKGAssembleNode({
-      skipStateExtractor: flag('skip-states'),
-      skipExplorerIngest: flag('skip-explorer-ingest'),
-      skipValidator: flag('skip-validate'),
-    })(state));
+  // ── PHASE 5: ASSEMBLE BRAIN (skeleton) ──────────────────────────────────
+  // Build a queryable kg-v2 skeleton FIRST so the live explorer agent has
+  // something to reason over. No LLM cost.
+  if (!flag('skip-assemble-skeleton') && !flag('skip-assemble')) {
+    console.log('\n━━━ Phase 5: Assemble Brain — Skeleton (migrate + tech-binder) ━━━');
+    Object.assign(state, await createKGAssembleSkeletonNode()(state));
   } else {
-    console.log('[pipeline] --skip-assemble');
+    console.log('[pipeline] --skip-assemble-skeleton');
   }
 
-  // Phase 16 — Markdown Emit (no LLM)
+  // ── PHASE 6: MARKDOWN (preliminary, gives explorer agent module docs) ──
   if (!flag('skip-markdown')) {
-    console.log('\n━━━ Phase 16: Markdown Emitter ━━━');
+    console.log('\n━━━ Phase 6: Markdown Emitter (preliminary — for explorer context) ━━━');
     await createMarkdownEmitterNode()(state);
   } else {
     console.log('[pipeline] --skip-markdown');
   }
 
-  // Phase 17 — Explorer (agent, per module)
+  // ── PHASE 7: EXPLORE (live agent walks the skeleton brain) ─────────────
+  // The agent now has: a brain to query, module .md docs to read, and a real
+  // browser to drive. Its findings (constraints surfaced at runtime, modal
+  // states, error messages) get folded into the brain in Phase 8 finalize
+  // — so state-extractor's per-flow naming sees them. Closes the loop in
+  // ONE pipeline run.
   if (!flag('skip-explore') && !flag('skip-explorer')) {
-    console.log('\n━━━ Phase 17: Explorer (agent, per module) ━━━');
+    console.log('\n━━━ Phase 7: Explorer (live agent, per module — feeds Phase 8 finalize) ━━━');
     const { explore } = await import('../src/pipeline/explorer.js');
     const out = await explore();
     console.log(`[explorer] ${out.modulesExplored} modules explored · ${(out.totalDurationMs / 1000).toFixed(1)}s · ${Math.round(out.totalTokens / 1000)}k tok`);
-    // Re-emit markdown in case explorer updated anything (currently it doesn't mutate state, but future enhancement)
-    if (!flag('skip-markdown-reemit')) {
-      console.log('\n━━━ Phase 17b: Markdown Re-emit (post-explorer) ━━━');
-      await createMarkdownEmitterNode()(state);
-    }
   } else {
     console.log('[pipeline] --skip-explore');
   }
 
-  // Phase 18 — Spec Gen (no LLM, consumes kg-v2.json)
+  // ── PHASE 8: ASSEMBLE BRAIN (finalize) ──────────────────────────────────
+  // explorer-ingest folds Phase-7 findings into kg-v2 → state-extractor names
+  // states (sees the deltas) → cleanup → validator. State-extractor is the
+  // only LLM call here; rest deterministic.
+  if (!flag('skip-assemble-finalize') && !flag('skip-assemble')) {
+    console.log('\n━━━ Phase 8: Assemble Brain — Finalize (ingest deltas + state-extractor + cleanup + validator) ━━━');
+    Object.assign(state, await createKGAssembleFinalizeNode({
+      skipStateExtractor: flag('skip-states'),
+      skipExplorerIngest: flag('skip-explorer-ingest'),
+      skipValidator: flag('skip-validate'),
+    })(state));
+  } else {
+    console.log('[pipeline] --skip-assemble-finalize');
+  }
+
+  // ── PHASE 9: MARKDOWN (re-emit so module docs reflect finalized brain) ─
+  if (!flag('skip-markdown-reemit')) {
+    console.log('\n━━━ Phase 9: Markdown Emitter (post-finalize re-emit) ━━━');
+    await createMarkdownEmitterNode()(state);
+  } else {
+    console.log('[pipeline] --skip-markdown-reemit');
+  }
+
+  // ── PHASE 10: SPEC GEN (consumes finalized kg-v2.json) ─────────────────
   if (!flag('skip-specgen')) {
-    console.log('\n━━━ Phase 18: Spec Generator ━━━');
+    console.log('\n━━━ Phase 10: Spec Generator ━━━');
     Object.assign(state, await createComprehensionSpecGenNode()(state));
   } else {
     console.log('[pipeline] --skip-specgen');

@@ -38,32 +38,55 @@ Optional:
 | `npx tsx scripts/traverse-flow.ts`   | Walk a flow's full state machine |
 | `npx tsx scripts/_viz-v2.ts`         | Render `kg-v2.html` interactive graph |
 
-## Pipeline (11 phases)
+## Pipeline (10 phases — agent loop closes in ONE run)
 
 ```
-1.  Crawler              browser, no LLM   → knowledge-graph.json + scraped/network/interactions
-2.  Comprehender         LLM (Sonnet)      → comprehension.json
-3.  Doc Structurer       LLM               → structured-docs.json
-4.  Module Discovery     LLM               → modules.json + module-edges.json
-5.  Control Clustering   LLM               → controls.json
-6.  Control Wiring       LLM               → controls.json (wired)
-7.  Capability Derivation no LLM           → capabilities.json (unnamed)
-8.  Capability Naming    LLM               → capabilities.json (named)
-9.  Edge Case Derivation no LLM            → capabilities.json (edge cases + heuristic personas)
-10. KG Assemble          ONE phase, six steps → kg-v2.json + kg-validation.json
-      ├─ migrate           no LLM   v1 sidecars → 4-layer skeleton KG
-      ├─ tech-binder       no LLM   bind ApiCall/ContractCall/Event onto actions
-      ├─ explorer-ingest   no LLM   fold runtime deltas from exploration.json
-      ├─ state-extractor   LLM      replace skeleton states with named state machines
-      ├─ cleanup           no LLM   drop migrator skeletons LLM superseded
-      └─ validator         no LLM   schema + assertion-completeness rules
-11. Markdown + Explorer + Spec Gen → knowledge/*.md, exploration.json (next-run input), tests/<module>/*.spec.ts
+1.  CRAWL                  browser, no LLM       → knowledge-graph.json (raw scaffolding) + scraped/network
+2.  UNDERSTAND             LLM, dApp-level       → comprehension.json + structured-docs.json
+                              ├─ Comprehender         archetype + summary
+                              └─ Doc Structurer       per-doc {topics, rules}
+3.  STRUCTURE              LLM, per-module       → modules.json + controls.json
+                              ├─ Module Discovery
+                              ├─ Control Clustering
+                              └─ Control Wiring
+4.  DERIVE                 no LLM + 1 LLM batch  → capabilities.json
+                              ├─ Capability Derivation graph traversal
+                              ├─ Capability Naming     LLM labels (per-module batched)
+                              └─ Edge Case Derivation  constraints × caps + heuristic personas
+5.  ASSEMBLE BRAIN (skel)  no LLM                → skeleton kg-v2.json
+                              ├─ kg-migrate            v1 + sidecars → 4-layer skeleton
+                              └─ tech-binder           bind ApiCall/ContractCall/Event
+6.  MARKDOWN (preliminary) no LLM                → knowledge/*.md (so explorer agent has docs)
+7.  EXPLORE                LLM, live agent       → exploration.json (THIS run)
+                              runExecutor walks each module against the skeleton brain
+8.  FINALIZE BRAIN         no LLM + 1 LLM batch  → finalized kg-v2.json + kg-validation.json
+                              ├─ explorer-ingest       fold THIS-run deltas in
+                              ├─ state-extractor       LLM names state machines per flow
+                              │                        (sees explorer deltas in prompt)
+                              ├─ kg-cleanup            drop superseded skeletons
+                              └─ kg-validator          schema + assertion-completeness
+9.  MARKDOWN re-emit       no LLM                → knowledge/*.md (with finalized brain)
+10. SPEC GEN               no LLM                → tests/<module>/*.spec.ts (v2-enriched)
 ```
 
-Skip flags reuse cached artifacts:
-- pre-assemble:  `--skip-crawl --skip-comprehend --skip-docs --skip-modules --skip-controls --skip-wiring --skip-capabilities --skip-naming --skip-edges`
-- assemble:      `--skip-assemble` (whole), or fine-grained `--skip-states --skip-explorer-ingest --skip-validate`
-- post-assemble: `--skip-explore --skip-markdown --skip-specgen`
+**The agent (`runExecutor`, src/agent/loop.ts) appears in three places:**
+- Phase 7 EXPLORE — walks per-module to enrich the brain (build-time)
+- `npm run run` → heal-runner — recovers broken specs (run-time)
+- `npm run chat` → handler.ts → act mode — handles ad-hoc tasks (run-time)
+
+Same function, three task contexts.
+
+**Two KG artifacts** — by current design, not deliberately:
+- `knowledge-graph.json` (Phase 1 output) — flat raw scaffolding consumed by Phases 2–4
+- `kg-v2.json` (Phase 8 output) — THE brain, what spec-gen + chat agent + probe-brain consume
+
+Nothing reads `knowledge-graph.json` after Phase 4. Folding crawler output directly into v2 nodes (eliminating the v1 file) is the next architectural cleanup; not done yet.
+
+Skip flags:
+- coarse:  `--skip-crawl --skip-comprehend --skip-docs --skip-modules --skip-controls --skip-wiring --skip-capabilities --skip-naming --skip-edges`
+- assemble: `--skip-assemble` (both halves) OR `--skip-assemble-skeleton` / `--skip-assemble-finalize`
+- finalize: `--skip-states --skip-explorer-ingest --skip-validate`
+- live:    `--skip-explore --skip-markdown --skip-markdown-reemit --skip-specgen`
 
 ## Folder layout
 

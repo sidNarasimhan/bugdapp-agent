@@ -64,12 +64,21 @@ Autonomous QA agent for Web3 dApps. Crawls a dApp from outside (URL only), build
 | 7 | **Capability Derivation** | no | Graph traversal → capabilities (one per submit-CTA path) | `capabilities.json` (unnamed) |
 | 8 | **Capability Naming** | yes | LLM labels each capability ("Open ZFP Long on ETH-USD") | `capabilities.json` |
 | 9 | **Edge Case Derivation** | no | constraints × capabilities → edge-case rows + heuristic personas (`riskClass + archetype`) | (in `capabilities.json`) |
-| 10 | **KG Assemble** (one phase, 6 sub-steps) | mixed | `migrate → tech-binder → explorer-ingest → state-extractor → cleanup → validator`. State-extractor is the only LLM step inside; rest deterministic. Each sub-step has its own skip flag. | **`kg-v2.json`** + `kg-validation.json` + `exploration-deltas.json` |
-| 11 | **Markdown Emitter** | no | Knowledge dump per module (browseable docs) | `knowledge/*.md` |
-| 12 | **Explorer** (optional) | yes | Live browser run per module → `exploration.json` consumed by `explorer-ingest` in next pipeline run | `exploration.json` |
-| 13 | **Spec Gen** | no | One Playwright spec per capability × asset row, enriched with v2 KG state names + event assertions | `tests/<module>/<cap>.spec.ts` |
+| 10a | **Assemble Brain — Skeleton** | no | `kg-migrate + tech-binder` — builds queryable skeleton kg-v2 BEFORE the live agent walks it | `kg-v2.json` (skeleton) |
+| 11a | **Markdown (preliminary)** | no | Module .md docs so explorer agent has context to load | `knowledge/*.md` |
+| 12 | **Explore** | yes | Live `runExecutor` agent walks each module against the skeleton brain | `exploration.json` (THIS run) |
+| 10b | **Assemble Brain — Finalize** | mixed | `explorer-ingest → state-extractor → cleanup → validator`. Folds Phase-12 findings into kg-v2 BEFORE state-extractor names states (so naming sees observed UI states). State-extractor is the only LLM step here. | finalized `kg-v2.json` + `kg-validation.json` + `exploration-deltas.json` |
+| 11b | **Markdown re-emit** | no | Re-render module .md so docs reflect finalized brain | `knowledge/*.md` |
+| 13 | **Spec Gen** | no | One Playwright spec per capability × asset row, enriched with finalized v2 KG state names + event assertions | `tests/<module>/<cap>.spec.ts` |
 
-The agent at runtime (`src/agent/loop.ts` → `runExecutor`) is the same agent the Explorer step drives, the same one that heals broken specs, the same one that handles ad-hoc chat tasks (`src/chat/handler.ts`).
+**The agent loop closes in ONE pipeline run** — explorer (Phase 12) feeds explorer-ingest (inside Phase 10b finalize) which feeds state-extractor's prompt. Previously explorer ran AFTER finalize, so its findings were one run behind.
+
+**The agent (`src/agent/loop.ts` → `runExecutor`)** is one function with three callers:
+- **Phase 12 Explorer** — build-time, walks each module to enrich the brain
+- **`scripts/run.ts` → heal-runner** — runtime, recovers broken Playwright specs
+- **`scripts/chat.ts` → handler.ts (act mode)** — runtime, handles ad-hoc chat tasks
+
+**Two KG artifacts on disk** — `knowledge-graph.json` (Phase 1 raw scaffolding, consumed by Phases 2–4 only) + `kg-v2.json` (Phase 10b finalized, THE brain). Folding crawler output directly into v2 nodes is the next architectural cleanup; deferred.
 
 ---
 
