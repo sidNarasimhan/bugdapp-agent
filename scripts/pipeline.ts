@@ -125,145 +125,146 @@ async function main() {
     console.log(`[pipeline] cached KG: ${cached.knowledgeGraph.pages.length} pages, ${cached.knowledgeGraph.components.length} components, ${cached.knowledgeGraph.docSections?.length ?? 0} docs`);
   }
 
-  // Phase 3 — Comprehender
+  // Phase 2 — Comprehender
   if (!flag('skip-comprehend')) {
-    console.log('\n━━━ Phase 3: Comprehender ━━━');
+    console.log('\n━━━ Phase 2: Comprehender ━━━');
     Object.assign(state, await createComprehensionNode()(state));
   } else {
     console.log('[pipeline] --skip-comprehend');
   }
 
-  // Phase 4 — Doc Structurer
+  // Phase 3 — Doc Structurer
   if (!flag('skip-docs')) {
-    console.log('\n━━━ Phase 4: Doc Structurer ━━━');
+    console.log('\n━━━ Phase 3: Doc Structurer ━━━');
     Object.assign(state, await createDocStructurerNode()(state));
   } else {
     console.log('[pipeline] --skip-docs');
   }
 
-  // Phase 5 — Module Discovery
+  // Phase 4 — Module Discovery
   if (!flag('skip-modules')) {
-    console.log('\n━━━ Phase 5: Module Discovery ━━━');
+    console.log('\n━━━ Phase 4: Module Discovery ━━━');
     Object.assign(state, await createModuleDiscoveryNode()(state));
   } else {
     console.log('[pipeline] --skip-modules');
   }
 
-  // Phase 6 — Control Clustering
+  // Phase 5 — Control Clustering
   if (!flag('skip-controls')) {
-    console.log('\n━━━ Phase 6: Control Clustering ━━━');
+    console.log('\n━━━ Phase 5: Control Clustering ━━━');
     Object.assign(state, await createControlClusteringNode()(state));
   } else {
     console.log('[pipeline] --skip-controls');
   }
 
-  // Phase 7 — Control Wiring
+  // Phase 6 — Control Wiring
   if (!flag('skip-wiring')) {
-    console.log('\n━━━ Phase 7: Control Wiring ━━━');
+    console.log('\n━━━ Phase 6: Control Wiring ━━━');
     Object.assign(state, await createControlWiringNode()(state));
   } else {
     console.log('[pipeline] --skip-wiring');
   }
 
-  // Phase 8 — Capability Derivation (no LLM)
+  // Phase 7 — Capability Derivation (no LLM)
   if (!flag('skip-capabilities')) {
-    console.log('\n━━━ Phase 8: Capability Derivation ━━━');
+    console.log('\n━━━ Phase 7: Capability Derivation ━━━');
     Object.assign(state, await createCapabilityDerivationNode()(state));
   } else {
     console.log('[pipeline] --skip-capabilities');
   }
 
-  // Phase 9 — Capability Naming (LLM labels)
+  // Phase 8 — Capability Naming (LLM labels)
   if (!flag('skip-naming')) {
-    console.log('\n━━━ Phase 9: Capability Naming ━━━');
+    console.log('\n━━━ Phase 8: Capability Naming ━━━');
     Object.assign(state, await createCapabilityNamingNode()(state));
   } else {
     console.log('[pipeline] --skip-naming');
   }
 
-  // Phase 10 — Edge Case Derivation (no LLM)
+  // Phase 9 — Edge Case Derivation (no LLM)
   if (!flag('skip-edges')) {
-    console.log('\n━━━ Phase 10: Edge Case Derivation ━━━');
+    console.log('\n━━━ Phase 9: Edge Case Derivation ━━━');
     Object.assign(state, await createEdgeCaseDerivationNode()(state));
   } else {
     console.log('[pipeline] --skip-edges');
   }
 
-  // Phase 11 — Persona Assignment
+  // Phase 10 — Persona Assignment
   if (!flag('skip-personas')) {
-    console.log('\n━━━ Phase 11: Persona Assignment ━━━');
+    console.log('\n━━━ Phase 10: Persona Assignment ━━━');
     Object.assign(state, await createPersonaAssignmentNode()(state));
   } else {
     console.log('[pipeline] --skip-personas');
   }
 
-  // Phase 11.5 — KG v2 Migrator (no LLM, deterministic)
+  // Phase 11 — KG v2 Build (no LLM, deterministic — builds kg-v2.json from
+  // all upstream sidecars. This is THE KG step; older v1 graph builder is gone)
   if (!flag('skip-kg-migrate')) {
-    console.log('\n━━━ Phase 11.5: KG v2 Migrator ━━━');
+    console.log('\n━━━ Phase 11: KG v2 Build ━━━');
     Object.assign(state, await createKGMigrateNode()(state));
   } else {
     console.log('[pipeline] --skip-kg-migrate');
   }
 
-  // Phase 11.6 — Tech Binder (no LLM, deterministic)
+  // Phase 12 — Tech Binder (no LLM)
   if (!flag('skip-tech-binder')) {
-    console.log('\n━━━ Phase 11.6: Tech Binder ━━━');
+    console.log('\n━━━ Phase 12: Tech Binder ━━━');
     Object.assign(state, await createTechBinderNode()(state));
   } else {
     console.log('[pipeline] --skip-tech-binder');
   }
 
-  // Phase 11.7 — State Extractor (LLM, costs credits)
+  // Phase 13 — State Extractor (LLM, costs credits)
   if (!flag('skip-states')) {
-    console.log('\n━━━ Phase 11.7: State Extractor ━━━');
+    console.log('\n━━━ Phase 13: State Extractor ━━━');
     Object.assign(state, await createStateExtractorNode()(state));
   } else {
     console.log('[pipeline] --skip-states');
   }
 
-  // Phase 11.75 — KG Cleanup (no LLM, deterministic — removes migrator
-  // skeleton states superseded by state-extractor)
+  // Phase 14 — KG Cleanup (no LLM — drops migrator skeleton states once
+  // state-extractor has replaced them with LLM-named ones)
   if (!flag('skip-kg-cleanup')) {
-    console.log('\n━━━ Phase 11.75: KG Cleanup ━━━');
+    console.log('\n━━━ Phase 14: KG Cleanup ━━━');
     Object.assign(state, await createKGCleanupNode()(state));
   } else {
     console.log('[pipeline] --skip-kg-cleanup');
   }
 
-  // Phase 11.8 — KG Validator (no LLM, deterministic)
+  // Phase 15 — KG Validator (no LLM)
   if (!flag('skip-validate')) {
-    console.log('\n━━━ Phase 11.8: KG Validator ━━━');
+    console.log('\n━━━ Phase 15: KG Validator ━━━');
     Object.assign(state, await createKGValidatorNode()(state));
   } else {
     console.log('[pipeline] --skip-validate');
   }
 
-  // Phase 12 — Markdown Emit (no LLM)
+  // Phase 16 — Markdown Emit (no LLM)
   if (!flag('skip-markdown')) {
-    console.log('\n━━━ Phase 12: Markdown Emitter ━━━');
+    console.log('\n━━━ Phase 16: Markdown Emitter ━━━');
     await createMarkdownEmitterNode()(state);
   } else {
     console.log('[pipeline] --skip-markdown');
   }
 
-  // Phase 13 — Explorer (agent, per module)
+  // Phase 17 — Explorer (agent, per module)
   if (!flag('skip-explore') && !flag('skip-explorer')) {
-    console.log('\n━━━ Phase 13: Explorer (agent, per module) ━━━');
+    console.log('\n━━━ Phase 17: Explorer (agent, per module) ━━━');
     const { explore } = await import('../src/pipeline/explorer.js');
     const out = await explore();
     console.log(`[explorer] ${out.modulesExplored} modules explored · ${(out.totalDurationMs / 1000).toFixed(1)}s · ${Math.round(out.totalTokens / 1000)}k tok`);
     // Re-emit markdown in case explorer updated anything (currently it doesn't mutate state, but future enhancement)
     if (!flag('skip-markdown-reemit')) {
-      console.log('\n━━━ Phase 13b: Markdown Re-emit (post-explorer) ━━━');
+      console.log('\n━━━ Phase 17b: Markdown Re-emit (post-explorer) ━━━');
       await createMarkdownEmitterNode()(state);
     }
   } else {
     console.log('[pipeline] --skip-explore');
   }
 
-  // Phase 14 — Spec Gen (no LLM)
+  // Phase 18 — Spec Gen (no LLM, consumes kg-v2.json)
   if (!flag('skip-specgen')) {
-    console.log('\n━━━ Phase 14: Spec Generator ━━━');
+    console.log('\n━━━ Phase 18: Spec Generator ━━━');
     Object.assign(state, await createComprehensionSpecGenNode()(state));
   } else {
     console.log('[pipeline] --skip-specgen');

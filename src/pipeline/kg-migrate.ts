@@ -1,7 +1,10 @@
 /**
- * KG Migrator — converts v1 artifacts (knowledge-graph.json + capabilities.json
- * + controls.json + modules.json + dappConstraints + graph.json) into the v2
- * four-layer KG. Deterministic, no LLM.
+ * KG v2 Build — assembles the four-layer KG from upstream artifacts:
+ * knowledge-graph.json + comprehension.json + structured-docs.json +
+ * modules.json + controls.json + capabilities.json. Deterministic, no LLM.
+ *
+ * Named "migrate" historically because it used to consume an additional
+ * v1 typed graph that's been retired; it's now THE KG build step.
  *
  * What gets populated:
  *   L1 Structural — Pages + Components from v1 KG (lossless map).

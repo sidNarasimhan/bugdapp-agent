@@ -243,25 +243,24 @@ src/
 │   └── archetypes/         # perps, swap, lending, staking, cdp, yield (assertion sets)
 │
 ├── pipeline/
-│   ├── crawler.ts                # phase 1
-│   ├── kg-builder.ts             # phase 2 (v1 graph)
-│   ├── comprehender.ts           # phase 3
-│   ├── doc-structurer.ts         # phase 4
-│   ├── module-discovery.ts       # phase 5
-│   ├── control-clustering.ts     # phase 6
-│   ├── control-wiring.ts         # phase 7
-│   ├── capability-derivation.ts  # phase 8
-│   ├── capability-naming.ts      # phase 9
-│   ├── edge-case-derivation.ts   # phase 10
-│   ├── persona-assignment.ts     # phase 11
-│   ├── kg-migrate.ts             # phase 11.5  ← v2
-│   ├── tech-binder.ts            # phase 11.6  ← v2
-│   ├── state-extractor.ts        # phase 11.7  ← v2 (LLM)
-│   ├── kg-cleanup.ts             # phase 11.75 ← v2
-│   ├── kg-validator.ts           # phase 11.8  ← v2
-│   ├── markdown-emitter.ts       # phase 12
-│   ├── explorer.ts               # phase 13 (optional, live)
-│   ├── spec-gen.ts               # phase 14 (now v2-enriched)
+│   ├── crawler.ts                # phase 1  (writes knowledge-graph.json + sidecars)
+│   ├── comprehender.ts           # phase 2
+│   ├── doc-structurer.ts         # phase 3
+│   ├── module-discovery.ts       # phase 4
+│   ├── control-clustering.ts     # phase 5
+│   ├── control-wiring.ts         # phase 6
+│   ├── capability-derivation.ts  # phase 7
+│   ├── capability-naming.ts      # phase 8
+│   ├── edge-case-derivation.ts   # phase 9
+│   ├── persona-assignment.ts     # phase 10
+│   ├── kg-migrate.ts             # phase 11  — builds kg-v2.json from all upstream sidecars
+│   ├── tech-binder.ts            # phase 12
+│   ├── state-extractor.ts        # phase 13  (LLM)
+│   ├── kg-cleanup.ts             # phase 14
+│   ├── kg-validator.ts           # phase 15
+│   ├── markdown-emitter.ts       # phase 16
+│   ├── explorer.ts               # phase 17  (optional, live)
+│   ├── spec-gen.ts               # phase 18  — consumes kg-v2.json
 │   ├── spec-healer.ts            # used at runtime by heal-runner
 │   ├── heal-runner.ts            # runs a suite, heals failing tests
 │   └── crawl-context.ts          # internal helper
