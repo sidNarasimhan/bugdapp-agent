@@ -13,8 +13,7 @@
  *    6.  Control Wiring          LLM: feedsInto / gates / affectedBy edges
  *    7.  Capability Derivation   no LLM — graph traversal → capabilities
  *    8.  Capability Naming       LLM labels per derived capability
- *    9.  Edge Case Derivation    no LLM — constraints × capabilities → edge cases
- *    10. Persona Assignment      LLM tags capabilities with personas
+ *    9.  Edge Case Derivation    no LLM — constraints × capabilities → edge cases (+ heuristic personas)
  *    11. KG v2 Migrator          no LLM — v1 + sidecars → 4-layer KG
  *    12. Tech Binder             no LLM — bind ApiCall/ContractCall/Event onto actions
  *    13. State Extractor         LLM per-flow — replaces migrator skeleton states
@@ -27,7 +26,7 @@
  * Skip flags let you reuse cached artifacts:
  *   --skip-crawl --skip-comprehend --skip-docs --skip-modules
  *   --skip-controls --skip-wiring --skip-capabilities --skip-naming
- *   --skip-edges --skip-personas --skip-kg-migrate --skip-tech-binder
+ *   --skip-edges --skip-kg-migrate --skip-tech-binder
  *   --skip-states --skip-kg-cleanup --skip-validate
  *   --skip-explore --skip-markdown --skip-specgen
  */
@@ -44,7 +43,6 @@ import { createControlWiringNode } from '../src/pipeline/control-wiring.js';
 import { createCapabilityDerivationNode } from '../src/pipeline/capability-derivation.js';
 import { createCapabilityNamingNode } from '../src/pipeline/capability-naming.js';
 import { createEdgeCaseDerivationNode } from '../src/pipeline/edge-case-derivation.js';
-import { createPersonaAssignmentNode } from '../src/pipeline/persona-assignment.js';
 import { createKGMigrateNode } from '../src/pipeline/kg-migrate.js';
 import { createTechBinderNode } from '../src/pipeline/tech-binder.js';
 import { createStateExtractorNode } from '../src/pipeline/state-extractor.js';
@@ -189,13 +187,9 @@ async function main() {
     console.log('[pipeline] --skip-edges');
   }
 
-  // Phase 10 — Persona Assignment
-  if (!flag('skip-personas')) {
-    console.log('\n━━━ Phase 10: Persona Assignment ━━━');
-    Object.assign(state, await createPersonaAssignmentNode()(state));
-  } else {
-    console.log('[pipeline] --skip-personas');
-  }
+  // (Persona Assignment phase removed — heuristic now folded into Phase 9
+  // Edge Case Derivation. Personas were decoration only; the LLM call added
+  // marginal polish over the same fallback rules already in place.)
 
   // Phase 11 — KG v2 Build (no LLM, deterministic — builds kg-v2.json from
   // all upstream sidecars. This is THE KG step; older v1 graph builder is gone)

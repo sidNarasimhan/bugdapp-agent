@@ -68,13 +68,32 @@ export function createEdgeCaseDerivationNode() {
         });
       }
       cap.edgeCases = cases;
+      cap.personas = defaultPersonas(cap);
       totalCases += cases.length;
     }
 
     writeFileSync(join(config.outputDir, 'capabilities.json'), JSON.stringify(caps, null, 2));
-    console.log(`[EdgeCaseDerivation] derived ${totalCases} edge cases across ${caps.length} capabilities`);
+    const totalPersonas = caps.reduce((n, c) => n + c.personas.length, 0);
+    console.log(`[EdgeCaseDerivation] derived ${totalCases} edge cases + ${totalPersonas} persona tags across ${caps.length} capabilities`);
     return { capabilities: caps };
   };
+}
+
+/** Heuristic persona tagger keyed on archetype + risk + edge-cases. Replaces
+ *  the old per-dApp LLM Persona Assignment phase — that one only added marginal
+ *  naming polish on top of this same fallback. */
+function defaultPersonas(c: Capability): string[] {
+  if (c.edgeCases.length > 0 && c.riskClass !== 'safe') return ['adversarial'];
+  if (c.riskClass === 'safe') return ['casual-user'];
+  switch (c.archetype) {
+    case 'perps':   return ['new-trader', 'power-user'];
+    case 'swap':    return ['new-user', 'power-swapper'];
+    case 'lending': return ['depositor', 'borrower'];
+    case 'staking': return ['staker'];
+    case 'yield':   return ['yield-farmer'];
+    case 'lp':      return ['liquidity-provider'];
+    default:        return ['casual-user'];
+  }
 }
 
 // ── Sources of constraints ──────────────────────────────────────────────
