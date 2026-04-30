@@ -41,7 +41,7 @@ import {
   KGv2Builder, mintId, stamp, nowIso,
   type StateNode, type FlowNode, type ActionNode, type StateConditions,
 } from '../agent/kg-v2.js';
-import { loadKGv2, saveKGv2 } from './kg-migrate.js';
+import { loadKGv2, saveKGv2 } from './kg-build.js';
 
 const STATE_MODEL = process.env.STATE_MODEL ?? 'anthropic/claude-sonnet-4.5';
 

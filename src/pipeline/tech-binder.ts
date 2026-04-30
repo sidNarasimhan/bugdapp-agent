@@ -25,7 +25,7 @@ import {
   type ApiCallNode, type ContractCallNode, type EventNode, type ErrorResponseNode,
   type ActionNode,
 } from '../agent/kg-v2.js';
-import { loadKGv2, saveKGv2 } from './kg-migrate.js';
+import { loadKGv2, saveKGv2 } from './kg-build.js';
 
 interface NetworkSample {
   method?: string;

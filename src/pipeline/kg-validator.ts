@@ -21,7 +21,7 @@ import { writeFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentStateType } from '../agent/state.js';
 import { KGv2Builder, type ActionNode, type StateNode, type FlowNode, type ApiCallNode, type ContractCallNode } from '../agent/kg-v2.js';
-import { loadKGv2 } from './kg-migrate.js';
+import { loadKGv2 } from './kg-build.js';
 
 export type Severity = 'error' | 'warn';
 export interface ValidationIssue {

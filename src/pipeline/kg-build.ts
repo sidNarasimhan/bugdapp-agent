@@ -3,8 +3,14 @@
  * knowledge-graph.json + comprehension.json + structured-docs.json +
  * modules.json + controls.json + capabilities.json. Deterministic, no LLM.
  *
- * Named "migrate" historically because it used to consume an additional
- * v1 typed graph that's been retired; it's now THE KG build step.
+ * (Renamed from kg-migrate.ts — the file used to "migrate" from a v1 typed
+ * graph that's been retired. It's now THE KG build step.)
+ *
+ * Note on inferenceSource strings: emitted nodes carry inferenceSource:
+ * 'kg-migrate:*' as stable identifiers — kg-cleanup.ts greps for that
+ * prefix to identify skeleton states the LLM-extractor superseded. Kept
+ * as-is for KG-on-disk back-compat. Don't rename without coordinating
+ * cleanup at the same time.
  *
  * What gets populated:
  *   L1 Structural — Pages + Components from v1 KG (lossless map).
@@ -109,8 +115,11 @@ export interface MigrateResult {
   edgeCount: number;
 }
 
-export function createKGMigrateNode() {
-  return async (state: AgentStateType): Promise<Partial<AgentStateType> & { kgMigrate?: MigrateResult }> => {
+/** Builds kg-v2.json from upstream sidecars. Deterministic, no LLM.
+ *  Emitted nodes still carry inferenceSource: 'kg-migrate:*' as the stable
+ *  identifier kg-cleanup keys on — kept for KG-on-disk back-compat. */
+export function createKGBuildNode() {
+  return async (state: AgentStateType): Promise<Partial<AgentStateType> & { kgBuild?: MigrateResult }> => {
     const { config, knowledgeGraph: kg } = state;
     const url = config.url;
     const outDir = config.outputDir;
@@ -560,21 +569,21 @@ export function createKGMigrateNode() {
           const stamp = new Date().toISOString().replace(/[:.]/g, '-');
           const backupPath = join(v2Dir, `kg-v2.pre-rebuild-${stamp}.json`);
           writeFileSync(backupPath, JSON.stringify(existing, null, 2));
-          console.log(`[kg-migrate] SAFETY: existing kg-v2.json has LLM enrichment — snapshotted to ${backupPath}`);
+          console.log(`[kg-build] SAFETY: existing kg-v2.json has LLM enrichment — snapshotted to ${backupPath}`);
         }
       } catch (e: any) {
-        console.warn(`[kg-migrate] could not inspect existing kg-v2.json for safety snapshot: ${e?.message ?? e}`);
+        console.warn(`[kg-build] could not inspect existing kg-v2.json for safety snapshot: ${e?.message ?? e}`);
       }
     }
 
     writeFileSync(versionedPath, JSON.stringify(out, null, 2));
     writeFileSync(latestPath, JSON.stringify(out, null, 2));
 
-    console.log(`[kg-migrate] L1: ${b.byKind('page').length}p ${b.byKind('component').length}c | L2: ${actionCount}a ${stateCount}s (${errorStateCount} error) | L3: ${b.byKind('apiCall').length}api ${b.byKind('contractCall').length}contract | L4: ${flowCount}flow ${b.byKind('docSection').length}doc ${b.byKind('constraint').length}constraint ${b.byKind('asset').length}asset ${b.byKind('feature').length}feature`);
-    console.log(`[kg-migrate] wrote ${out.nodes.length} nodes + ${out.edges.length} edges → ${latestPath}`);
+    console.log(`[kg-build] L1: ${b.byKind('page').length}p ${b.byKind('component').length}c | L2: ${actionCount}a ${stateCount}s (${errorStateCount} error) | L3: ${b.byKind('apiCall').length}api ${b.byKind('contractCall').length}contract | L4: ${flowCount}flow ${b.byKind('docSection').length}doc ${b.byKind('constraint').length}constraint ${b.byKind('asset').length}asset ${b.byKind('feature').length}feature`);
+    console.log(`[kg-build] wrote ${out.nodes.length} nodes + ${out.edges.length} edges → ${latestPath}`);
 
     return {
-      kgMigrate: {
+      kgBuild: {
         kgV2Path: latestPath,
         nodeCount: out.nodes.length,
         edgeCount: out.edges.length,

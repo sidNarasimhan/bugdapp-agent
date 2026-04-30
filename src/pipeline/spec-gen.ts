@@ -13,7 +13,7 @@
  */
 import {
   writeFileSync, readFileSync, mkdirSync, copyFileSync, existsSync,
-  symlinkSync, readdirSync, renameSync, statSync,
+  symlinkSync, readdirSync, renameSync, statSync, unlinkSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -566,9 +566,11 @@ function archiveStaleModuleSpecs(testsDir: string): void {
         const src = readFileSync(join(srcDir, f), 'utf-8');
         const rewritten = src.replace(/from\s+(['"])\.\.\/\.\.\//g, `from $1../../../`);
         writeFileSync(join(dstDir, f), rewritten, 'utf-8');
-        require('fs').unlinkSync(join(srcDir, f));
+        unlinkSync(join(srcDir, f));
         moved++;
-      } catch {}
+      } catch (e) {
+        console.warn(`[SpecGen] archive failed for ${f}: ${(e as Error).message}`);
+      }
     }
   }
   if (moved > 0) console.log(`[SpecGen] archived ${moved} stale module specs to tests/_legacy/`);
@@ -590,9 +592,10 @@ function moveLegacySpecs(testsDir: string): void {
       const src = readFileSync(srcPath, 'utf-8');
       const rewritten = src.replace(/from\s+(['"])\.\.\//g, `from $1../../`);
       writeFileSync(dstPath, rewritten, 'utf-8');
-      renameSync(srcPath, srcPath + '.moved');
-      try { require('fs').unlinkSync(srcPath + '.moved'); } catch {}
-    } catch {}
+      unlinkSync(srcPath);
+    } catch (e) {
+      console.warn(`[SpecGen] legacy move failed for ${f}: ${(e as Error).message}`);
+    }
   }
   console.log(`[SpecGen] moved ${entries.length} legacy specs to tests/_legacy/`);
 }

@@ -258,13 +258,13 @@ src/
 │   ├── capability-derivation.ts  # phase 7
 │   ├── capability-naming.ts      # phase 8
 │   ├── edge-case-derivation.ts   # phase 9  (also assigns heuristic personas)
-│   ├── kg-assemble.ts            # phase 10 — orchestrator (the 6 sub-steps below)
-│   │   ├─ kg-migrate.ts          #   sub: build skeleton kg-v2 from v1 + sidecars
-│   │   ├─ tech-binder.ts         #   sub: bind ApiCall/ContractCall/Event onto actions
-│   │   ├─ explorer-ingest.ts     #   sub: heuristic mine of exploration.json deltas
-│   │   ├─ state-extractor.ts     #   sub: LLM names state machine per flow
-│   │   ├─ kg-cleanup.ts          #   sub: drop superseded migrator skeletons
-│   │   └─ kg-validator.ts        #   sub: schema + assertion-completeness rules
+│   ├── kg-assemble.ts            # phase 10 — splits skeleton + finalize halves
+│   │   ├─ kg-build.ts            #   sub: build skeleton kg-v2 from v1 + sidecars (skeleton half)
+│   │   ├─ tech-binder.ts         #   sub: bind ApiCall/ContractCall/Event onto actions (skeleton half)
+│   │   ├─ explorer-ingest.ts     #   sub: heuristic mine of exploration.json deltas (finalize half)
+│   │   ├─ state-extractor.ts     #   sub: LLM names state machine per flow (finalize half)
+│   │   ├─ kg-cleanup.ts          #   sub: drop superseded skeletons (finalize half)
+│   │   └─ kg-validator.ts        #   sub: schema + assertion-completeness rules (finalize half)
 │   ├── markdown-emitter.ts       # phase 11
 │   ├── explorer.ts               # phase 12  (optional, live agent — feeds explorer-ingest next run)
 │   ├── spec-gen.ts               # phase 13  — consumes kg-v2.json

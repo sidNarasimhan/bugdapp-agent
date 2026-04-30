@@ -30,7 +30,7 @@
  */
 import type { AgentStateType } from '../agent/state.js';
 import type { StateNode } from '../agent/kg-v2.js';
-import { loadKGv2, saveKGv2 } from './kg-migrate.js';
+import { loadKGv2, saveKGv2 } from './kg-build.js';
 
 export function createKGCleanupNode() {
   return async (state: AgentStateType): Promise<Partial<AgentStateType>> => {

@@ -30,7 +30,7 @@
  * This module just composes them so the pipeline reads as two phase blocks
  * with the live agent sandwiched between.
  */
-import { createKGMigrateNode } from './kg-migrate.js';
+import { createKGBuildNode } from './kg-build.js';
 import { createTechBinderNode } from './tech-binder.js';
 import { createExplorerIngestNode } from './explorer-ingest.js';
 import { createStateExtractorNode } from './state-extractor.js';
@@ -53,7 +53,7 @@ export function createKGAssembleSkeletonNode(_opts: SkeletonOpts = {}) {
     let merged: Partial<AgentStateType> = {};
 
     console.log('\n  ─ skeleton 1/2: KG Migrate (v1 sidecars → 4-layer skeleton)');
-    Object.assign(state, merged = await createKGMigrateNode()(state));
+    Object.assign(state, merged = await createKGBuildNode()(state));
 
     console.log('\n  ─ skeleton 2/2: Tech Binder (api / contract / event bindings)');
     Object.assign(state, merged = await createTechBinderNode()(state));
