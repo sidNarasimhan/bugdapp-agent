@@ -1,6 +1,5 @@
 /**
- * Module Discovery — replaces the old module-segmenter. Produces a richer
- * module shape with:
+ * Module Discovery — produces a rich module shape with:
  *   - kind: primary | cross-cutting | shared
  *   - multi-page hosting (cross-cutting modules live on every page)
  *   - cross-module relations: dependsOn, produces, consumedBy, navigatesTo
