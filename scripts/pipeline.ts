@@ -4,33 +4,38 @@
  *
  *   npm run pipeline -- --url https://developer.avantisfi.com/trade
  *
- * Phases (capability-centric rebuild):
- *   1. Crawler              browser crawl of site + docs + APIs
- *   2. KG Builder           typed graph from crawl (no LLM)
- *   3. Comprehender         LLM archetype + overall summary (optional, reused)
- *   4. Doc Structurer       LLM: parse each doc → {topics, rules}
- *   5. Module Discovery     LLM: primary/cross-cutting/shared modules + cross-module edges
- *   6. Control Clustering   LLM: DOM atoms → semantic Controls
- *   7. Control Wiring       LLM: feedsInto/gates/affectedBy edges
- *   8. Capability Derivation (no LLM) graph traversal → capabilities
- *   9. Capability Naming    LLM: name each graph-derived capability
- *  10. Edge Case Derivation (no LLM) constraints × capabilities → edge cases
- *  11. Persona Assignment   LLM: tag capabilities with personas
- *  12. Explorer (agent)     drives browser per module to validate/enrich
- *  13. Markdown Emitter     no LLM — writes knowledge/*.md from all phases
- *  14. Spec Gen             no LLM — one spec per capability × edge case
+ * Phases:
+ *    1.  Crawler                 browser crawl of site + docs + APIs
+ *    2.  Comprehender            LLM archetype + overall summary (cached)
+ *    3.  Doc Structurer          LLM: parse each doc → {topics, rules}
+ *    4.  Module Discovery        LLM: primary/cross-cutting/shared modules + cross-module edges
+ *    5.  Control Clustering      LLM: DOM atoms → semantic Controls
+ *    6.  Control Wiring          LLM: feedsInto / gates / affectedBy edges
+ *    7.  Capability Derivation   no LLM — graph traversal → capabilities
+ *    8.  Capability Naming       LLM labels per derived capability
+ *    9.  Edge Case Derivation    no LLM — constraints × capabilities → edge cases
+ *    10. Persona Assignment      LLM tags capabilities with personas
+ *    11. KG v2 Migrator          no LLM — v1 + sidecars → 4-layer KG
+ *    12. Tech Binder             no LLM — bind ApiCall/ContractCall/Event onto actions
+ *    13. State Extractor         LLM per-flow — replaces migrator skeleton states
+ *    14. KG Cleanup              no LLM — drop migrator skeletons LLM superseded
+ *    15. KG Validator            no LLM — assertion-completeness rules
+ *    16. Markdown Emitter        no LLM — writes knowledge/*.md
+ *    17. Explorer (agent)        drives browser per module to validate/enrich
+ *    18. Spec Gen                no LLM — one spec per capability × edge case (consumes kg-v2)
  *
  * Skip flags let you reuse cached artifacts:
  *   --skip-crawl --skip-comprehend --skip-docs --skip-modules
  *   --skip-controls --skip-wiring --skip-capabilities --skip-naming
- *   --skip-edges --skip-personas --skip-explore --skip-markdown --skip-specgen
+ *   --skip-edges --skip-personas --skip-kg-migrate --skip-tech-binder
+ *   --skip-states --skip-kg-cleanup --skip-validate
+ *   --skip-explore --skip-markdown --skip-specgen
  */
 import 'dotenv/config';
 import { mkdirSync, existsSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { launchBrowser, closeBrowser } from '../src/core/browser-launch.js';
 import { createCrawlerNode, loadCachedCrawlAndKG } from '../src/pipeline/crawler.js';
-import { createKGBuilderNode } from '../src/pipeline/kg-builder.js';
 import { createComprehensionNode } from '../src/pipeline/comprehender.js';
 import { createDocStructurerNode } from '../src/pipeline/doc-structurer.js';
 import { createModuleDiscoveryNode } from '../src/pipeline/module-discovery.js';
@@ -75,13 +80,8 @@ async function main() {
   const state: AgentStateType = {
     messages: [],
     knowledgeGraph: emptyKnowledgeGraph(),
-    graph: { nodes: [], edges: [] },
     crawlData: null,
-    testPlan: null,
     specFiles: [],
-    testResults: [],
-    iteration: 0,
-    maxIterations: 3,
     config: {
       url,
       seedPhrase: process.env.SEED_PHRASE ?? '',
@@ -124,10 +124,6 @@ async function main() {
     state.knowledgeGraph = cached.knowledgeGraph;
     console.log(`[pipeline] cached KG: ${cached.knowledgeGraph.pages.length} pages, ${cached.knowledgeGraph.components.length} components, ${cached.knowledgeGraph.docSections?.length ?? 0} docs`);
   }
-
-  // Phase 2 — KG Builder
-  console.log('\n━━━ Phase 2: KG Builder ━━━');
-  Object.assign(state, await createKGBuilderNode()(state));
 
   // Phase 3 — Comprehender
   if (!flag('skip-comprehend')) {

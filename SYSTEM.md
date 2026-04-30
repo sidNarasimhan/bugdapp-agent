@@ -55,27 +55,24 @@ Autonomous QA agent for Web3 dApps. Crawls a dApp from outside (URL only), build
 
 | # | Phase | LLM? | What it does | Key output |
 |---|---|---|---|---|
-| 1 | **Crawler** | no | Headed browser drives MetaMask, walks pages, records DOM + network | `scraped-data.json`, `network-raw-apis.json` |
-| 2 | **KG Builder** | no | v1 KG (pages, components, actions) → real graph w/ adjacency | `graph.json`, `computed-flows.json` |
-| 3 | **Comprehender** | yes | One-pass dApp summary + archetype detection | `comprehension.json` |
-| 4 | **Doc Structurer** | yes | Each doc section → `{topics[], rules[]}` | `structured-docs.json` |
-| 5 | **Module Discovery** | yes | Pages → modules (primary / cross-cutting / shared) + cross-module edges | `modules.json`, `module-edges.json` |
-| 6 | **Control Clustering** | yes | DOM atoms → semantic Controls (input, toggle, modal-selector, submit-cta…) | `controls.json` |
-| 7 | **Control Wiring** | yes | feedsInto / gates / affectedBy edges between controls | (in `controls.json`) |
-| 8 | **Capability Derivation** | no | Graph traversal → capabilities (one per submit-CTA path) | `capabilities.json` (unnamed) |
-| 9 | **Capability Naming** | yes | LLM labels each capability ("Open ZFP Long on ETH-USD") | `capabilities.json` |
-| 10 | **Edge Case Derivation** | no | constraints × capabilities → edge-case test rows | (in `capabilities.json`) |
-| 11 | **Persona Assignment** | yes | new-trader / power-user / adversarial tagging | (in `capabilities.json`) |
-| **11.5** | **KG Migrate (v2)** | no | v1 artifacts → v2 four-layer KG | **`kg-v2.json`** |
-| **11.6** | **Tech Binder** | no | Bind ApiCall / ContractCall / Event / ErrorResponse to actions; drop bundle bloat | (mutates `kg-v2.json`) |
-| **11.7** | **State Extractor** | yes | Per Flow, LLM names the state machine (`Wallet_Connected_Idle` → `Trade_Pending` → `Position_Open_Success`) + failure modes | (mutates `kg-v2.json`) |
-| **11.75** | **KG Cleanup** | no | Drop migrator skeleton states superseded by LLM | (mutates `kg-v2.json`) |
-| **11.8** | **KG Validator** | no | Assertion-completeness rules (E1–E5, W1–W4) | `kg-validation.json` |
-| 12 | **Markdown Emitter** | no | Knowledge dump per module (browseable docs) | `knowledge/*.md` |
-| 13 | **Explorer** (optional) | yes | Live browser run per module to confirm scaffolding | `flows-by-persona.json` enrich |
-| 14 | **Spec Gen** | no | One Playwright spec per capability × asset row, enriched with v2 KG state names + event assertions | `tests/<module>/<cap>.spec.ts` |
-
-**Bold rows are new in v2.** Older phases are unchanged; v2 is additive.
+| 1 | **Crawler** | no | Headed browser drives MetaMask, walks pages, records DOM + network. Builds v1 KG (pages, components, actions, docs, APIs, contracts, assets, features, constraints) | `scraped-data.json`, `network-raw-apis.json`, `knowledge-graph.json` |
+| 2 | **Comprehender** | yes | One-pass dApp summary + archetype detection | `comprehension.json` |
+| 3 | **Doc Structurer** | yes | Each doc section → `{topics[], rules[]}` | `structured-docs.json` |
+| 4 | **Module Discovery** | yes | Pages → modules (primary / cross-cutting / shared) + cross-module edges | `modules.json`, `module-edges.json` |
+| 5 | **Control Clustering** | yes | DOM atoms → semantic Controls (input, toggle, modal-selector, submit-cta…) | `controls.json` |
+| 6 | **Control Wiring** | yes | feedsInto / gates / affectedBy edges between controls | (in `controls.json`) |
+| 7 | **Capability Derivation** | no | Graph traversal → capabilities (one per submit-CTA path) | `capabilities.json` (unnamed) |
+| 8 | **Capability Naming** | yes | LLM labels each capability ("Open ZFP Long on ETH-USD") | `capabilities.json` |
+| 9 | **Edge Case Derivation** | no | constraints × capabilities → edge-case test rows | (in `capabilities.json`) |
+| 10 | **Persona Assignment** | yes | new-trader / power-user / adversarial tagging | (in `capabilities.json`) |
+| 11 | **KG Migrate (v2)** | no | v1 + sidecars → v2 four-layer KG | **`kg-v2.json`** |
+| 12 | **Tech Binder** | no | Bind ApiCall / ContractCall / Event onto actions | (mutates `kg-v2.json`) |
+| 13 | **State Extractor** | yes | Per flow, LLM names the state machine (`Wallet_Connected_Idle` → `Trade_Pending` → `Position_Open_Success`) + failure modes | (mutates `kg-v2.json`) |
+| 14 | **KG Cleanup** | no | Drop migrator skeleton states superseded by LLM | (mutates `kg-v2.json`) |
+| 15 | **KG Validator** | no | Assertion-completeness rules (E1–E5, W1–W4) | `kg-validation.json` |
+| 16 | **Markdown Emitter** | no | Knowledge dump per module (browseable docs) | `knowledge/*.md` |
+| 17 | **Explorer** (optional) | yes | Live browser run per module to confirm scaffolding | `exploration.json` |
+| 18 | **Spec Gen** | no | One Playwright spec per capability × asset row, enriched with v2 KG state names + event assertions | `tests/<module>/<cap>.spec.ts` |
 
 ---
 
@@ -319,8 +316,7 @@ templates/
 
 output/<dapp>/
 ├── (v1 phase artifacts)    # comprehension.json, structured-docs.json, modules.json,
-│                           # controls.json, capabilities.json, knowledge-graph.json,
-│                           # graph.json, computed-flows.json, etc.
+│                           # controls.json, capabilities.json, knowledge-graph.json
 ├── kg-v2.json              # ← THE BRAIN (always-latest)
 ├── kg-v2/                  #   per-crawl snapshots (versioning)
 ├── kg-validation.json      # validator report

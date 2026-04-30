@@ -1,4 +1,4 @@
-// KG types + DAppGraph. No LangGraph dependency — pipeline state is plain interface below.
+// KG types. No LangGraph dependency — pipeline state is plain interface below.
 import { z } from 'zod';
 
 // ── Knowledge Graph Node Types ──
@@ -195,283 +195,6 @@ function mergeKG(existing: KnowledgeGraph, update: KnowledgeGraph): KnowledgeGra
   };
 }
 
-// ── Real Graph (built by KG_Builder from flat arrays) ──
-
-export type GraphNodeType = 'page' | 'component' | 'form' | 'modal' | 'flow' | 'constraint' | 'edgeCase' | 'feature' | 'asset';
-export type GraphEdgeType = 'REVEALS' | 'CONTAINS' | 'LEADS_TO' | 'CONFIGURES' | 'SUBMITS' | 'CONSTRAINS' | 'HAS_EDGE_CASE' | 'NAVIGATES_TO' | 'HAS_OPTION';
-
-export interface GraphNode {
-  id: string;
-  type: GraphNodeType;
-  label: string;         // human-readable name
-  pageId?: string;       // which page this belongs to
-  selector?: string;     // Playwright selector if it's a component
-  role?: string;         // UI role if component
-  data?: Record<string, any>; // extra data (constraint value, flow steps, etc.)
-}
-
-export interface GraphEdge {
-  from: string;
-  to: string;
-  type: GraphEdgeType;
-  label?: string;        // human-readable description
-}
-
-export interface ComputedFlow {
-  id: string;
-  name: string;
-  path: GraphNode[];     // ordered nodes in the flow
-  edges: GraphEdge[];    // edges connecting them
-  selectors: string[];   // Playwright selectors for each step
-  requiresFundedWallet: boolean;
-  constraints: KGConstraint[];  // constraints that apply to this flow
-  permutations?: { field: string; options: string[] }[]; // dropdown/toggle variations
-}
-
-/**
- * Real graph with adjacency list and traversal methods.
- * Built by KG_Builder from crawler + explorer data.
- */
-export class DAppGraph {
-  nodes = new Map<string, GraphNode>();
-  outEdges = new Map<string, GraphEdge[]>();  // adjacency list (outgoing)
-  inEdges = new Map<string, GraphEdge[]>();   // reverse adjacency (incoming)
-
-  addNode(node: GraphNode): void {
-    this.nodes.set(node.id, node);
-    if (!this.outEdges.has(node.id)) this.outEdges.set(node.id, []);
-    if (!this.inEdges.has(node.id)) this.inEdges.set(node.id, []);
-  }
-
-  addEdge(edge: GraphEdge): void {
-    // Ensure nodes exist
-    if (!this.outEdges.has(edge.from)) this.outEdges.set(edge.from, []);
-    if (!this.inEdges.has(edge.to)) this.inEdges.set(edge.to, []);
-    // Deduplicate
-    const existing = this.outEdges.get(edge.from)!;
-    if (!existing.some(e => e.to === edge.to && e.type === edge.type)) {
-      existing.push(edge);
-      this.inEdges.get(edge.to)!.push(edge);
-    }
-  }
-
-  /** Get all nodes reachable from a starting node via REVEALS/LEADS_TO/CONTAINS edges */
-  traverseFrom(startId: string, edgeTypes?: GraphEdgeType[]): GraphNode[] {
-    const visited = new Set<string>();
-    const result: GraphNode[] = [];
-    const queue = [startId];
-    const allowedTypes = edgeTypes ? new Set(edgeTypes) : null;
-
-    while (queue.length > 0) {
-      const id = queue.shift()!;
-      if (visited.has(id)) continue;
-      visited.add(id);
-      const node = this.nodes.get(id);
-      if (node) result.push(node);
-      for (const edge of this.outEdges.get(id) || []) {
-        if (allowedTypes && !allowedTypes.has(edge.type)) continue;
-        if (!visited.has(edge.to)) queue.push(edge.to);
-      }
-    }
-    return result;
-  }
-
-  /** Find all multi-screen flows: paths that go through REVEALS edges */
-  getRevealFlows(): ComputedFlow[] {
-    const flows: ComputedFlow[] = [];
-    // Start from components that have REVEALS edges
-    const revealStarts = new Set<string>();
-    for (const [nodeId, edges] of this.outEdges) {
-      if (edges.some(e => e.type === 'REVEALS')) revealStarts.add(nodeId);
-    }
-
-    for (const startId of revealStarts) {
-      // Only start from nodes that have no incoming REVEALS (they're flow entry points)
-      const incoming = this.inEdges.get(startId) || [];
-      if (incoming.some(e => e.type === 'REVEALS')) continue;
-
-      const path = this.followChain(startId, ['REVEALS', 'LEADS_TO']);
-      if (path.length >= 2) {
-        flows.push({
-          id: `flow:reveal:${startId}`,
-          name: path.map(n => n.label).join(' → '),
-          path,
-          edges: this.getEdgesBetween(path),
-          selectors: path.filter(n => n.selector).map(n => n.selector!),
-          requiresFundedWallet: path.some(n => n.data?.triggersWallet),
-          constraints: [],
-        });
-      }
-    }
-    return flows;
-  }
-
-  /** Get all form flows: components that CONFIGURE a form + SUBMITS edge */
-  getFormFlows(): ComputedFlow[] {
-    const flows: ComputedFlow[] = [];
-    const formNodes = [...this.nodes.values()].filter(n => n.type === 'form');
-
-    for (const form of formNodes) {
-      const configEdges = (this.inEdges.get(form.id) || []).filter(e => e.type === 'CONFIGURES');
-      const submitEdges = (this.inEdges.get(form.id) || []).filter(e => e.type === 'SUBMITS');
-      if (configEdges.length === 0 || submitEdges.length === 0) continue;
-
-      const configNodes = configEdges.map(e => this.nodes.get(e.from)!).filter(Boolean);
-      const submitNode = submitEdges.map(e => this.nodes.get(e.from)!).filter(Boolean)[0];
-      if (!submitNode) continue;
-
-      // Sort: selectors first, then inputs, then toggles, then submit
-      const roleOrder: Record<string, number> = { combobox: 0, option: 0, spinbutton: 1, textbox: 1, slider: 1, switch: 2 };
-      configNodes.sort((a, b) => (roleOrder[a.role || ''] ?? 1) - (roleOrder[b.role || ''] ?? 1));
-
-      const path = [...configNodes, submitNode];
-
-      // Find permutations from dropdowns and toggles
-      const permutations: { field: string; options: string[] }[] = [];
-      for (const node of configNodes) {
-        // Dropdowns/comboboxes and buttons with HAS_OPTION edges
-        const optionEdges = (this.outEdges.get(node.id) || []).filter(e => e.type === 'HAS_OPTION');
-        if (optionEdges.length > 0) {
-          const opts = optionEdges.map(e => this.nodes.get(e.to)?.label || '').filter(Boolean);
-          if (opts.length > 0) {
-            permutations.push({ field: node.label, options: opts });
-          }
-        } else if (node.role === 'switch') {
-          permutations.push({ field: node.label, options: ['on', 'off'] });
-        }
-      }
-
-      // Find constraints that apply to any component in this form
-      const constraintEdges = configNodes.flatMap(n =>
-        (this.inEdges.get(n.id) || []).filter(e => e.type === 'CONSTRAINS')
-      );
-      const constraints = constraintEdges
-        .map(e => this.nodes.get(e.from))
-        .filter(Boolean)
-        .map(n => n!.data as KGConstraint)
-        .filter(Boolean);
-
-      flows.push({
-        id: `flow:form:${form.id}`,
-        name: `${form.label}: ${configNodes.map(n => n.label).join(' + ')} → ${submitNode.label}`,
-        path,
-        edges: this.getEdgesBetween(path),
-        selectors: path.filter(n => n.selector).map(n => n.selector!),
-        requiresFundedWallet: submitNode.data?.triggersWallet || false,
-        constraints,
-        permutations,
-      });
-    }
-    return flows;
-  }
-
-  /** Get all flows: reveal flows + form flows + explorer-reported flows */
-  getAllFlows(): ComputedFlow[] {
-    return [...this.getRevealFlows(), ...this.getFormFlows()];
-  }
-
-  /** Get components that have no outgoing edges (unexplored) */
-  getUnconnectedComponents(): GraphNode[] {
-    return [...this.nodes.values()].filter(n =>
-      n.type === 'component' &&
-      (this.outEdges.get(n.id) || []).length === 0 &&
-      (this.inEdges.get(n.id) || []).filter(e => e.type !== 'CONTAINS').length === 0
-    );
-  }
-
-  /** Get flows that haven't been tested */
-  getUntestedFlows(): ComputedFlow[] {
-    return this.getAllFlows(); // all flows from graph are untested by definition
-  }
-
-  /** Get constraints for a specific component */
-  getConstraintsFor(nodeId: string): GraphNode[] {
-    return (this.inEdges.get(nodeId) || [])
-      .filter(e => e.type === 'CONSTRAINS')
-      .map(e => this.nodes.get(e.from)!)
-      .filter(Boolean);
-  }
-
-  /** Follow a chain of edges from a node */
-  private followChain(startId: string, edgeTypes: GraphEdgeType[]): GraphNode[] {
-    const chain: GraphNode[] = [];
-    const visited = new Set<string>();
-    let current = startId;
-
-    while (current && !visited.has(current)) {
-      visited.add(current);
-      const node = this.nodes.get(current);
-      if (node) chain.push(node);
-
-      const nextEdge = (this.outEdges.get(current) || [])
-        .find(e => edgeTypes.includes(e.type) && !visited.has(e.to));
-      current = nextEdge?.to || '';
-    }
-    return chain;
-  }
-
-  /** Get edges between consecutive nodes in a path */
-  private getEdgesBetween(path: GraphNode[]): GraphEdge[] {
-    const edges: GraphEdge[] = [];
-    for (let i = 0; i < path.length - 1; i++) {
-      const edge = (this.outEdges.get(path[i].id) || [])
-        .find(e => e.to === path[i + 1].id);
-      if (edge) edges.push(edge);
-    }
-    return edges;
-  }
-
-  /** Stats for logging */
-  get stats() {
-    const edgeCount = [...this.outEdges.values()].reduce((s, e) => s + e.length, 0);
-    return { nodes: this.nodes.size, edges: edgeCount };
-  }
-
-  /** Serialize for persistence / state */
-  serialize(): { nodes: GraphNode[]; edges: GraphEdge[] } {
-    const edges: GraphEdge[] = [];
-    for (const arr of this.outEdges.values()) edges.push(...arr);
-    return { nodes: [...this.nodes.values()], edges };
-  }
-
-  /** Deserialize from persistence */
-  static deserialize(data: { nodes: GraphNode[]; edges: GraphEdge[] }): DAppGraph {
-    const g = new DAppGraph();
-    for (const n of data.nodes) g.addNode(n);
-    for (const e of data.edges) g.addEdge(e);
-    return g;
-  }
-}
-
-// ── Test Plan ──
-
-export interface TestPlan {
-  suites: {
-    name: string;
-    description: string;
-    tests: {
-      id: string;
-      name: string;
-      flowId?: string;
-      steps: string[];
-      expectedOutcome: string;
-      requiresFundedWallet: boolean;
-      priority: number;
-    }[];
-  }[];
-}
-
-// ── Test Result ──
-
-export interface TestResult {
-  testId: string;
-  title: string;
-  specFile: string;
-  status: 'passed' | 'failed' | 'skipped';
-  error?: string;
-  durationMs: number;
-}
-
 // ── Capability-centric data model (rebuild from user feedback) ──
 //
 // Hierarchy: dApp → Page → Module (kind=primary|cross-cutting|shared)
@@ -651,43 +374,6 @@ export interface StructuredDoc {
   referencesModuleIds: string[];  // modules this doc is relevant to
 }
 
-// ── User flows (Phase C — persona-driven) ──
-// Produced by src/pipeline/persona-mapper.ts. Intent-level user journeys
-// organized by persona, each mapped to real components from the module.
-// Drives module-by-module spec generation.
-
-export interface DAppUserFlowStep {
-  /** 1-sentence description of what the user does. */
-  description: string;
-  /** Components this step interacts with (must exist in the module). */
-  componentIds: string[];
-  /** Optional expected UI change or assertion. */
-  assertion?: string;
-}
-
-export interface DAppUserFlow {
-  /** Stable slug, e.g. 'flow:trade.zfp:open-long-market'. */
-  id: string;
-  /** Parent module id. */
-  moduleId: string;
-  /** Persona this flow serves (new-trader, power-user, adversarial, …). */
-  persona: string;
-  /** 1-sentence user goal. */
-  intent: string;
-  /** Prerequisites. Must include "wallet connected" for tx-involving flows. */
-  precondition: string;
-  /** Ordered steps. */
-  steps: DAppUserFlowStep[];
-  /** What the user verifies after. */
-  postcondition: string;
-  /** Archetype inherited from module. */
-  archetype: string;
-  /** Risk class (safe=no tx, medium=small tx, high=novel/large). */
-  riskClass: 'safe' | 'medium' | 'high';
-  /** Best-guess terminal state at submit time. */
-  expectedTerminal?: string;
-}
-
 // ── Plain pipeline state (no LangGraph) ──
 // Each pipeline node factory consumes+returns a subset of these fields.
 
@@ -706,12 +392,9 @@ export interface PipelineConfig {
 export interface AgentStateType {
   messages: any[];
   knowledgeGraph: KnowledgeGraph;
-  graph: { nodes: GraphNode[]; edges: GraphEdge[] };
   crawlData: any;
-  /** Module hierarchy produced by module-segmenter (legacy) or module-discovery (new). */
+  /** Module hierarchy produced by module-discovery. */
   modules?: DAppModule[];
-  /** Persona-driven user flows produced by persona-mapper (legacy). */
-  userFlows?: DAppUserFlow[];
   /** Semantic controls produced by control-clustering. */
   controls?: Control[];
   /** Capabilities derived by graph traversal from controls. */
@@ -720,10 +403,6 @@ export interface AgentStateType {
   dappConstraints?: DAppConstraint[];
   /** Structured docs from doc-structurer. */
   structuredDocs?: StructuredDoc[];
-  testPlan: TestPlan | null;
   specFiles: string[];
-  testResults: TestResult[];
-  iteration: number;
-  maxIterations: number;
   config: PipelineConfig;
 }

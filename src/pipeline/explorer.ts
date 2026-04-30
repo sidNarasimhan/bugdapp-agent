@@ -5,7 +5,7 @@
  * difference is the task given: "explore this module, fill gaps, observe
  * constraints, do NOT submit transactions." One exploration run per module.
  *
- * Input:  output/<host>/modules.json (from module-segmenter) + per-module
+ * Input:  output/<host>/modules.json (from module-discovery) + per-module
  *         .md (from markdown-emitter) so the agent has context before it starts.
  * Output: output/<host>/exploration.json — per-module findings (successful
  *         tool traces + LLM summary) ready to fold back into the KG.

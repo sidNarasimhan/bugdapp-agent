@@ -1,9 +1,7 @@
 /**
  * Persona Assignment — one LLM call: given all capabilities + their intents,
- * tag each with the relevant personas.
- *
- * Replaces the old persona-mapper (which *invented* flows). Now personas are
- * just metadata tags on already-derived capabilities.
+ * tag each with the relevant personas. Personas are metadata tags on
+ * already-derived capabilities, not invented flows.
  *
  * Cost: one batched call ~$0.03 total.
  */
