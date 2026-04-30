@@ -63,16 +63,13 @@ Autonomous QA agent for Web3 dApps. Crawls a dApp from outside (URL only), build
 | 6 | **Control Wiring** | yes | feedsInto / gates / affectedBy edges between controls | (in `controls.json`) |
 | 7 | **Capability Derivation** | no | Graph traversal → capabilities (one per submit-CTA path) | `capabilities.json` (unnamed) |
 | 8 | **Capability Naming** | yes | LLM labels each capability ("Open ZFP Long on ETH-USD") | `capabilities.json` |
-| 9 | **Edge Case Derivation** | no | constraints × capabilities → edge-case test rows | (in `capabilities.json`) |
-| 10 | **Persona Assignment** | yes | new-trader / power-user / adversarial tagging | (in `capabilities.json`) |
-| 11 | **KG Migrate (v2)** | no | v1 + sidecars → v2 four-layer KG | **`kg-v2.json`** |
-| 12 | **Tech Binder** | no | Bind ApiCall / ContractCall / Event onto actions | (mutates `kg-v2.json`) |
-| 13 | **State Extractor** | yes | Per flow, LLM names the state machine (`Wallet_Connected_Idle` → `Trade_Pending` → `Position_Open_Success`) + failure modes | (mutates `kg-v2.json`) |
-| 14 | **KG Cleanup** | no | Drop migrator skeleton states superseded by LLM | (mutates `kg-v2.json`) |
-| 15 | **KG Validator** | no | Assertion-completeness rules (E1–E5, W1–W4) | `kg-validation.json` |
-| 16 | **Markdown Emitter** | no | Knowledge dump per module (browseable docs) | `knowledge/*.md` |
-| 17 | **Explorer** (optional) | yes | Live browser run per module to confirm scaffolding | `exploration.json` |
-| 18 | **Spec Gen** | no | One Playwright spec per capability × asset row, enriched with v2 KG state names + event assertions | `tests/<module>/<cap>.spec.ts` |
+| 9 | **Edge Case Derivation** | no | constraints × capabilities → edge-case rows + heuristic personas (`riskClass + archetype`) | (in `capabilities.json`) |
+| 10 | **KG Assemble** (one phase, 6 sub-steps) | mixed | `migrate → tech-binder → explorer-ingest → state-extractor → cleanup → validator`. State-extractor is the only LLM step inside; rest deterministic. Each sub-step has its own skip flag. | **`kg-v2.json`** + `kg-validation.json` + `exploration-deltas.json` |
+| 11 | **Markdown Emitter** | no | Knowledge dump per module (browseable docs) | `knowledge/*.md` |
+| 12 | **Explorer** (optional) | yes | Live browser run per module → `exploration.json` consumed by `explorer-ingest` in next pipeline run | `exploration.json` |
+| 13 | **Spec Gen** | no | One Playwright spec per capability × asset row, enriched with v2 KG state names + event assertions | `tests/<module>/<cap>.spec.ts` |
+
+The agent at runtime (`src/agent/loop.ts` → `runExecutor`) is the same agent the Explorer step drives, the same one that heals broken specs, the same one that handles ad-hoc chat tasks (`src/chat/handler.ts`).
 
 ---
 
@@ -251,18 +248,19 @@ src/
 │   ├── control-wiring.ts         # phase 6
 │   ├── capability-derivation.ts  # phase 7
 │   ├── capability-naming.ts      # phase 8
-│   ├── edge-case-derivation.ts   # phase 9
-│   ├── persona-assignment.ts     # phase 10
-│   ├── kg-migrate.ts             # phase 11  — builds kg-v2.json from all upstream sidecars
-│   ├── tech-binder.ts            # phase 12
-│   ├── state-extractor.ts        # phase 13  (LLM)
-│   ├── kg-cleanup.ts             # phase 14
-│   ├── kg-validator.ts           # phase 15
-│   ├── markdown-emitter.ts       # phase 16
-│   ├── explorer.ts               # phase 17  (optional, live)
-│   ├── spec-gen.ts               # phase 18  — consumes kg-v2.json
-│   ├── spec-healer.ts            # used at runtime by heal-runner
-│   ├── heal-runner.ts            # runs a suite, heals failing tests
+│   ├── edge-case-derivation.ts   # phase 9  (also assigns heuristic personas)
+│   ├── kg-assemble.ts            # phase 10 — orchestrator (the 6 sub-steps below)
+│   │   ├─ kg-migrate.ts          #   sub: build skeleton kg-v2 from v1 + sidecars
+│   │   ├─ tech-binder.ts         #   sub: bind ApiCall/ContractCall/Event onto actions
+│   │   ├─ explorer-ingest.ts     #   sub: heuristic mine of exploration.json deltas
+│   │   ├─ state-extractor.ts     #   sub: LLM names state machine per flow
+│   │   ├─ kg-cleanup.ts          #   sub: drop superseded migrator skeletons
+│   │   └─ kg-validator.ts        #   sub: schema + assertion-completeness rules
+│   ├── markdown-emitter.ts       # phase 11
+│   ├── explorer.ts               # phase 12  (optional, live agent — feeds explorer-ingest next run)
+│   ├── spec-gen.ts               # phase 13  — consumes kg-v2.json
+│   ├── spec-healer.ts            # runtime — used by heal-runner to rewrite broken test bodies
+│   ├── heal-runner.ts            # runtime — runs a suite, invokes runExecutor on failures, heals
 │   └── crawl-context.ts          # internal helper
 │
 ├── chain/                  # on-chain verification runtime (used by generated specs)

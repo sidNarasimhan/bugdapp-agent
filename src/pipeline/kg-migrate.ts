@@ -544,6 +544,29 @@ export function createKGMigrateNode() {
     mkdirSync(v2Dir, { recursive: true });
     const versionedPath = join(v2Dir, `kg-v2.${crawlId.replace(/[^a-z0-9]/gi, '_')}.json`);
     const latestPath = join(outDir, 'kg-v2.json');
+
+    // SAFETY: if the existing kg-v2.json on disk has state-extractor or
+    // explorer enrichment, snapshot it before overwriting so we never silently
+    // destroy LLM work paid for in credits. The snapshot lives next to the
+    // versioned ones and is named so it's obvious which run produced it.
+    if (existsSync(latestPath)) {
+      try {
+        const existing = JSON.parse(readFileSync(latestPath, 'utf-8'));
+        const hasLLMEnrichment = (existing.nodes ?? []).some((n: any) =>
+          typeof n?.inferenceSource === 'string' &&
+          (n.inferenceSource.startsWith('state-extractor') || n.inferenceSource.startsWith('explorer'))
+        );
+        if (hasLLMEnrichment) {
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const backupPath = join(v2Dir, `kg-v2.pre-rebuild-${stamp}.json`);
+          writeFileSync(backupPath, JSON.stringify(existing, null, 2));
+          console.log(`[kg-migrate] SAFETY: existing kg-v2.json has LLM enrichment — snapshotted to ${backupPath}`);
+        }
+      } catch (e: any) {
+        console.warn(`[kg-migrate] could not inspect existing kg-v2.json for safety snapshot: ${e?.message ?? e}`);
+      }
+    }
+
     writeFileSync(versionedPath, JSON.stringify(out, null, 2));
     writeFileSync(latestPath, JSON.stringify(out, null, 2));
 

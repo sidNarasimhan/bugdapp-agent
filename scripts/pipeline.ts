@@ -14,20 +14,23 @@
  *    7.  Capability Derivation   no LLM — graph traversal → capabilities
  *    8.  Capability Naming       LLM labels per derived capability
  *    9.  Edge Case Derivation    no LLM — constraints × capabilities → edge cases (+ heuristic personas)
- *    11. KG v2 Migrator          no LLM — v1 + sidecars → 4-layer KG
- *    12. Tech Binder             no LLM — bind ApiCall/ContractCall/Event onto actions
- *    13. State Extractor         LLM per-flow — replaces migrator skeleton states
- *    14. KG Cleanup              no LLM — drop migrator skeletons LLM superseded
- *    15. KG Validator            no LLM — assertion-completeness rules
+ *    11–15.  KG Assemble        ONE phase orchestrating:
+ *                                  migrate (no LLM)        v1+sidecars → skeleton kg-v2
+ *                                  tech-binder (no LLM)    bind api/contract/event onto actions
+ *                                  explorer-ingest (no LLM) fold runtime-observed deltas in
+ *                                  state-extractor (LLM)   replace skeletons with named state machines
+ *                                  cleanup (no LLM)        drop superseded skeletons
+ *                                  validator (no LLM)      assertion-completeness rules
  *    16. Markdown Emitter        no LLM — writes knowledge/*.md
- *    17. Explorer (agent)        drives browser per module to validate/enrich
+ *    17. Explorer (agent)        drives browser per module → exploration.json → consumed by
+ *                                explorer-ingest in next pipeline run
  *    18. Spec Gen                no LLM — one spec per capability × edge case (consumes kg-v2)
  *
  * Skip flags let you reuse cached artifacts:
  *   --skip-crawl --skip-comprehend --skip-docs --skip-modules
  *   --skip-controls --skip-wiring --skip-capabilities --skip-naming
- *   --skip-edges --skip-kg-migrate --skip-tech-binder
- *   --skip-states --skip-kg-cleanup --skip-validate
+ *   --skip-edges --skip-assemble (whole assemble) OR finer-grained:
+ *   --skip-explorer-ingest --skip-states --skip-validate
  *   --skip-explore --skip-markdown --skip-specgen
  */
 import 'dotenv/config';
@@ -43,11 +46,7 @@ import { createControlWiringNode } from '../src/pipeline/control-wiring.js';
 import { createCapabilityDerivationNode } from '../src/pipeline/capability-derivation.js';
 import { createCapabilityNamingNode } from '../src/pipeline/capability-naming.js';
 import { createEdgeCaseDerivationNode } from '../src/pipeline/edge-case-derivation.js';
-import { createKGMigrateNode } from '../src/pipeline/kg-migrate.js';
-import { createTechBinderNode } from '../src/pipeline/tech-binder.js';
-import { createStateExtractorNode } from '../src/pipeline/state-extractor.js';
-import { createKGCleanupNode } from '../src/pipeline/kg-cleanup.js';
-import { createKGValidatorNode } from '../src/pipeline/kg-validator.js';
+import { createKGAssembleNode } from '../src/pipeline/kg-assemble.js';
 import { createMarkdownEmitterNode } from '../src/pipeline/markdown-emitter.js';
 import { createComprehensionSpecGenNode } from '../src/pipeline/spec-gen.js';
 import { activeDApp } from '../src/config.js';
@@ -191,46 +190,19 @@ async function main() {
   // Edge Case Derivation. Personas were decoration only; the LLM call added
   // marginal polish over the same fallback rules already in place.)
 
-  // Phase 11 — KG v2 Build (no LLM, deterministic — builds kg-v2.json from
-  // all upstream sidecars. This is THE KG step; older v1 graph builder is gone)
-  if (!flag('skip-kg-migrate')) {
-    console.log('\n━━━ Phase 11: KG v2 Build ━━━');
-    Object.assign(state, await createKGMigrateNode()(state));
+  // Phase 11–15 — KG Assemble (one orchestrator: migrate + tech-binder +
+  // explorer-ingest + state-extractor + cleanup + validator). State-extractor
+  // is the only LLM step; rest are deterministic. Each sub-step has its own
+  // skip flag so partial reruns are cheap.
+  if (!flag('skip-assemble')) {
+    console.log('\n━━━ Phase 11–15: KG Assemble ━━━');
+    Object.assign(state, await createKGAssembleNode({
+      skipStateExtractor: flag('skip-states'),
+      skipExplorerIngest: flag('skip-explorer-ingest'),
+      skipValidator: flag('skip-validate'),
+    })(state));
   } else {
-    console.log('[pipeline] --skip-kg-migrate');
-  }
-
-  // Phase 12 — Tech Binder (no LLM)
-  if (!flag('skip-tech-binder')) {
-    console.log('\n━━━ Phase 12: Tech Binder ━━━');
-    Object.assign(state, await createTechBinderNode()(state));
-  } else {
-    console.log('[pipeline] --skip-tech-binder');
-  }
-
-  // Phase 13 — State Extractor (LLM, costs credits)
-  if (!flag('skip-states')) {
-    console.log('\n━━━ Phase 13: State Extractor ━━━');
-    Object.assign(state, await createStateExtractorNode()(state));
-  } else {
-    console.log('[pipeline] --skip-states');
-  }
-
-  // Phase 14 — KG Cleanup (no LLM — drops migrator skeleton states once
-  // state-extractor has replaced them with LLM-named ones)
-  if (!flag('skip-kg-cleanup')) {
-    console.log('\n━━━ Phase 14: KG Cleanup ━━━');
-    Object.assign(state, await createKGCleanupNode()(state));
-  } else {
-    console.log('[pipeline] --skip-kg-cleanup');
-  }
-
-  // Phase 15 — KG Validator (no LLM)
-  if (!flag('skip-validate')) {
-    console.log('\n━━━ Phase 15: KG Validator ━━━');
-    Object.assign(state, await createKGValidatorNode()(state));
-  } else {
-    console.log('[pipeline] --skip-validate');
+    console.log('[pipeline] --skip-assemble');
   }
 
   // Phase 16 — Markdown Emit (no LLM)

@@ -38,7 +38,7 @@ Optional:
 | `npx tsx scripts/traverse-flow.ts`   | Walk a flow's full state machine |
 | `npx tsx scripts/_viz-v2.ts`         | Render `kg-v2.html` interactive graph |
 
-## Pipeline (18 phases)
+## Pipeline (11 phases)
 
 ```
 1.  Crawler              browser, no LLM   → knowledge-graph.json + scraped/network/interactions
@@ -49,19 +49,21 @@ Optional:
 6.  Control Wiring       LLM               → controls.json (wired)
 7.  Capability Derivation no LLM           → capabilities.json (unnamed)
 8.  Capability Naming    LLM               → capabilities.json (named)
-9.  Edge Case Derivation no LLM            → capabilities.json (edge cases)
-10. Persona Assignment   LLM               → capabilities.json (personas)
-11. KG v2 Migrator       no LLM            → kg-v2.json (4-layer brain)
-12. Tech Binder          no LLM            → kg-v2.json (api/contract/event nodes bound)
-13. State Extractor      LLM (per flow)    → kg-v2.json (real state names)
-14. KG Cleanup           no LLM            → kg-v2.json (drop migrator skeletons)
-15. KG Validator         no LLM            → kg-validation.json
-16. Markdown Emitter     no LLM            → knowledge/*.md
-17. Explorer (agent)     LLM               → exploration.json
-18. Spec Gen             no LLM            → tests/<module>/*.spec.ts (v2-enriched)
+9.  Edge Case Derivation no LLM            → capabilities.json (edge cases + heuristic personas)
+10. KG Assemble          ONE phase, six steps → kg-v2.json + kg-validation.json
+      ├─ migrate           no LLM   v1 sidecars → 4-layer skeleton KG
+      ├─ tech-binder       no LLM   bind ApiCall/ContractCall/Event onto actions
+      ├─ explorer-ingest   no LLM   fold runtime deltas from exploration.json
+      ├─ state-extractor   LLM      replace skeleton states with named state machines
+      ├─ cleanup           no LLM   drop migrator skeletons LLM superseded
+      └─ validator         no LLM   schema + assertion-completeness rules
+11. Markdown + Explorer + Spec Gen → knowledge/*.md, exploration.json (next-run input), tests/<module>/*.spec.ts
 ```
 
-Skip flags reuse cached artifacts: `--skip-crawl`, `--skip-comprehend`, `--skip-docs`, `--skip-modules`, `--skip-controls`, `--skip-wiring`, `--skip-capabilities`, `--skip-naming`, `--skip-edges`, `--skip-personas`, `--skip-kg-migrate`, `--skip-tech-binder`, `--skip-states`, `--skip-kg-cleanup`, `--skip-validate`, `--skip-explore`, `--skip-markdown`, `--skip-specgen`.
+Skip flags reuse cached artifacts:
+- pre-assemble:  `--skip-crawl --skip-comprehend --skip-docs --skip-modules --skip-controls --skip-wiring --skip-capabilities --skip-naming --skip-edges`
+- assemble:      `--skip-assemble` (whole), or fine-grained `--skip-states --skip-explorer-ingest --skip-validate`
+- post-assemble: `--skip-explore --skip-markdown --skip-specgen`
 
 ## Folder layout
 
