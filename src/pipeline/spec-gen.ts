@@ -20,6 +20,65 @@ import { fileURLToPath } from 'url';
 import type { AgentStateType, Capability, Control, DAppModule, KnowledgeGraph } from '../agent/state.js';
 import { getProfileOrThrow, type DAppProfile } from '../config.js';
 import { groupAssetsByClass } from './control-clustering.js';
+import { KGv2Builder, type FlowNode, type StateNode, type ContractCallNode, type EventNode, type DocSectionNode, type ConstraintNode } from '../agent/kg-v2.js';
+
+/** v2 KG enrichment for one Capability — picks the matching Flow + walks
+ *  the new schema to harvest assertion-rich data the v1 capability can't
+ *  carry (state labels, expected events, doc rules, constraint values). */
+interface V2Enrichment {
+  flow?: FlowNode;
+  startState?: StateNode;
+  endState?: StateNode;
+  walletSignContract?: ContractCallNode;
+  walletSignEvents: string[];        // event signatures expected on tx receipt
+  failureStates: string[];           // labelled failure states on the submit action
+  docRules: string[];                // up to 5 cited rules from linked DocSections
+  constraints: { label: string; value: string }[];
+}
+
+function enrichFromV2(cap: Capability, kgv2: KGv2Builder | null): V2Enrichment {
+  const empty: V2Enrichment = { walletSignEvents: [], failureStates: [], docRules: [], constraints: [] };
+  if (!kgv2) return empty;
+  const flow = (kgv2.byKind('flow') as FlowNode[]).find(f => f.legacyCapabilityId === cap.id);
+  if (!flow) return empty;
+  const startState = kgv2.nodes.get(flow.startStateId) as StateNode | undefined;
+  const endState = kgv2.nodes.get(flow.endStateId) as StateNode | undefined;
+
+  // Wallet-sign action is the last action of a non-safe flow.
+  const lastAid = flow.actionIds[flow.actionIds.length - 1];
+  const walletSignContract = lastAid
+    ? kgv2.outgoing(lastAid, 'INVOKES_CONTRACT_CALL')
+        .map(e => kgv2.nodes.get(e.to) as ContractCallNode)
+        .find(Boolean)
+    : undefined;
+  const walletSignEvents = walletSignContract
+    ? walletSignContract.expectedEventIds
+        .map(eid => (kgv2.nodes.get(eid) as EventNode | undefined)?.signature)
+        .filter((s): s is string => Boolean(s))
+    : [];
+  const failureStates = lastAid
+    ? kgv2.outgoing(lastAid, 'FAILS_TO')
+        .map(e => (kgv2.nodes.get(e.to) as StateNode | undefined)?.label)
+        .filter((s): s is string => Boolean(s))
+    : [];
+
+  // Doc rules from DESCRIBED_BY edges.
+  const docRules: string[] = [];
+  for (const e of kgv2.outgoing(flow.id, 'DESCRIBED_BY')) {
+    const d = kgv2.nodes.get(e.to) as DocSectionNode | undefined;
+    if (d?.rules?.length) docRules.push(...d.rules.slice(0, 3));
+    if (docRules.length >= 5) break;
+  }
+  // Constraints from CONSTRAINS edges (incoming on submit action).
+  const constraints: { label: string; value: string }[] = [];
+  if (lastAid) {
+    for (const e of kgv2.incoming(lastAid, 'CONSTRAINS')) {
+      const c = kgv2.nodes.get(e.from) as ConstraintNode | undefined;
+      if (c) constraints.push({ label: c.label, value: c.value });
+    }
+  }
+  return { flow, startState, endState, walletSignContract, walletSignEvents, failureStates, docRules: docRules.slice(0, 5), constraints };
+}
 
 function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'x';
@@ -43,6 +102,20 @@ export function createComprehensionSpecGenNode() {
     if (caps.length === 0) {
       console.log('[SpecGen] no capabilities — nothing to emit');
       return { specFiles: [] };
+    }
+
+    // Load v2 KG if present — used to enrich each spec with named states,
+    // expected event signatures, doc rule citations, and constraint values.
+    // Falls back gracefully if v2 KG missing (just emits v1-quality specs).
+    const v2Path = join(config.outputDir, 'kg-v2.json');
+    const kgv2 = existsSync(v2Path)
+      ? KGv2Builder.load(JSON.parse(readFileSync(v2Path, 'utf-8')))
+      : null;
+    if (kgv2) {
+      const flowCount = kgv2.byKind('flow').length;
+      console.log(`[SpecGen] v2 KG present: ${flowCount} flows, will enrich specs with state labels + event assertions`);
+    } else {
+      console.log('[SpecGen] no v2 KG — emitting v1-only specs (no event/state enrichment)');
     }
 
     console.log(`━━━ Spec Generator: ${caps.length} capabilities → module-organized specs ━━━`);
@@ -122,7 +195,8 @@ export function createComprehensionSpecGenNode() {
       const dir = join(testsDir, modSlug);
       mkdirSync(dir, { recursive: true });
       const filename = `${capSlug}.spec.ts`;
-      const code = emitCapabilitySpec(cap, mod, controlById, kg, profile, config.url);
+      const v2 = enrichFromV2(cap, kgv2);
+      const code = emitCapabilitySpec(cap, mod, controlById, kg, profile, config.url, v2);
       const fullPath = join(dir, filename);
       writeFileSync(fullPath, code, 'utf-8');
       specFiles.push(fullPath);
@@ -141,6 +215,7 @@ function emitCapabilitySpec(
   kg: KnowledgeGraph,
   profile: DAppProfile,
   url: string,
+  v2: V2Enrichment,
 ): string {
   const lines: string[] = [];
   // Detect modal-selector axis (typically asset selector) — one sample asset per
@@ -160,6 +235,33 @@ function emitCapabilitySpec(
   lines.push(`// Risk: ${cap.riskClass}`);
   if (testRows.length > 1) {
     lines.push(`// Data-driven: ${testRows.length} asset rows — ${testRows.map(r => r.asset).join(', ')}`);
+  }
+  // v2 KG enrichment block — visible to anyone reading the spec, citable when
+  // assertions fail. Skipped silently if v2 KG isn't on disk.
+  if (v2.flow) {
+    lines.push(`//`);
+    lines.push(`// v2 KG flow: ${v2.flow.id}  (state-machine source: ${v2.flow.inferenceSource ?? 'unknown'})`);
+    if (v2.startState) lines.push(`//   start state: ${v2.startState.label}`);
+    if (v2.endState)   lines.push(`//   end state:   ${v2.endState.label}`);
+    if (v2.walletSignContract) {
+      lines.push(`//   wallet-sign target: ${v2.walletSignContract.contractAddress.slice(0, 10)}…  ${v2.walletSignContract.functionSignature}`);
+    }
+    if (v2.walletSignEvents.length) {
+      lines.push(`//   expected on-chain events:`);
+      for (const sig of v2.walletSignEvents.slice(0, 4)) lines.push(`//     • ${sig}`);
+    }
+    if (v2.failureStates.length) {
+      lines.push(`//   catalogued failure modes:`);
+      for (const s of v2.failureStates.slice(0, 4)) lines.push(`//     ✗ ${s}`);
+    }
+    if (v2.constraints.length) {
+      lines.push(`//   constraints (testable boundaries):`);
+      for (const c of v2.constraints.slice(0, 3)) lines.push(`//     ⚖ ${c.label} = ${c.value}`);
+    }
+    if (v2.docRules.length) {
+      lines.push(`//   doc rules cited:`);
+      for (const r of v2.docRules) lines.push(`//     ☞ ${r.slice(0, 100)}`);
+    }
   }
   lines.push('');
   lines.push(`import { test, expect, connectWallet, raceConfirmTransaction, verifyPage, emitFindingIfNeeded } from '../../fixtures/wallet.fixture';`);
@@ -211,6 +313,19 @@ function emitCapabilitySpec(
       lines.push(`      const result = await verifyPage(page, { url: DAPP_URL, archetype: ${JSON.stringify(profile.archetype)}, chainId: DAPP_CHAIN_ID });`);
       lines.push(`      const dir = await emitFindingIfNeeded(result);`);
       lines.push(`      if (dir) console.log('[chain] finding bundle:', dir);`);
+      // v2 KG: log expected event signatures so a test reader knows EXACTLY
+      // what should appear on-chain. verifyPage already runs archetype assertions
+      // — these console.logs make the linkage between v2 KG and assertion result visible.
+      if (v2.walletSignEvents.length) {
+        lines.push(`      // v2 KG expected events (assertion target):`);
+        for (const sig of v2.walletSignEvents.slice(0, 4)) {
+          lines.push(`      console.log('[v2 expect event]', ${JSON.stringify(sig)});`);
+        }
+        lines.push(`      const observedSigs = (result.receipts ?? []).flatMap(r => (r.events ?? []).map((e: any) => e.signature)).filter(Boolean);`);
+        lines.push(`      const expectedSigs = ${JSON.stringify(v2.walletSignEvents.slice(0, 4))};`);
+        lines.push(`      const matched = expectedSigs.filter(s => observedSigs.some((o: string) => o.startsWith(s.split('(')[0])));`);
+        lines.push(`      console.log('[v2 event coverage]', matched.length + '/' + expectedSigs.length, 'expected events seen');`);
+      }
       lines.push(`    } catch (err) { console.warn('[chain]', (err as Error).message); }`);
     }
     lines.push(`  });`);

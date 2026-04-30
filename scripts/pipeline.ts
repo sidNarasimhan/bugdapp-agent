@@ -40,6 +40,11 @@ import { createCapabilityDerivationNode } from '../src/pipeline/capability-deriv
 import { createCapabilityNamingNode } from '../src/pipeline/capability-naming.js';
 import { createEdgeCaseDerivationNode } from '../src/pipeline/edge-case-derivation.js';
 import { createPersonaAssignmentNode } from '../src/pipeline/persona-assignment.js';
+import { createKGMigrateNode } from '../src/pipeline/kg-migrate.js';
+import { createTechBinderNode } from '../src/pipeline/tech-binder.js';
+import { createStateExtractorNode } from '../src/pipeline/state-extractor.js';
+import { createKGCleanupNode } from '../src/pipeline/kg-cleanup.js';
+import { createKGValidatorNode } from '../src/pipeline/kg-validator.js';
 import { createMarkdownEmitterNode } from '../src/pipeline/markdown-emitter.js';
 import { createComprehensionSpecGenNode } from '../src/pipeline/spec-gen.js';
 import { activeDApp } from '../src/config.js';
@@ -194,6 +199,47 @@ async function main() {
     Object.assign(state, await createPersonaAssignmentNode()(state));
   } else {
     console.log('[pipeline] --skip-personas');
+  }
+
+  // Phase 11.5 — KG v2 Migrator (no LLM, deterministic)
+  if (!flag('skip-kg-migrate')) {
+    console.log('\n━━━ Phase 11.5: KG v2 Migrator ━━━');
+    Object.assign(state, await createKGMigrateNode()(state));
+  } else {
+    console.log('[pipeline] --skip-kg-migrate');
+  }
+
+  // Phase 11.6 — Tech Binder (no LLM, deterministic)
+  if (!flag('skip-tech-binder')) {
+    console.log('\n━━━ Phase 11.6: Tech Binder ━━━');
+    Object.assign(state, await createTechBinderNode()(state));
+  } else {
+    console.log('[pipeline] --skip-tech-binder');
+  }
+
+  // Phase 11.7 — State Extractor (LLM, costs credits)
+  if (!flag('skip-states')) {
+    console.log('\n━━━ Phase 11.7: State Extractor ━━━');
+    Object.assign(state, await createStateExtractorNode()(state));
+  } else {
+    console.log('[pipeline] --skip-states');
+  }
+
+  // Phase 11.75 — KG Cleanup (no LLM, deterministic — removes migrator
+  // skeleton states superseded by state-extractor)
+  if (!flag('skip-kg-cleanup')) {
+    console.log('\n━━━ Phase 11.75: KG Cleanup ━━━');
+    Object.assign(state, await createKGCleanupNode()(state));
+  } else {
+    console.log('[pipeline] --skip-kg-cleanup');
+  }
+
+  // Phase 11.8 — KG Validator (no LLM, deterministic)
+  if (!flag('skip-validate')) {
+    console.log('\n━━━ Phase 11.8: KG Validator ━━━');
+    Object.assign(state, await createKGValidatorNode()(state));
+  } else {
+    console.log('[pipeline] --skip-validate');
   }
 
   // Phase 12 — Markdown Emit (no LLM)
