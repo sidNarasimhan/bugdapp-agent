@@ -310,7 +310,7 @@ function emitOneRowSpec(
     let choice = cap.optionChoices[cid];
     if (ctrl.kind === 'modal-selector' && row.asset) choice = row.asset;
     lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
-    for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
+    for (const stmt of controlToPlaywright(ctrl, choice, kg, profile)) lines.push(`    ${stmt}`);
     lines.push(`    await page.waitForTimeout(500);`);
   }
   lines.push('');
@@ -350,9 +350,12 @@ function emitOneRowSpec(
     lines.push(`    const ts = (result as any).classified?.state;`);
     lines.push(`    expect(acceptableStates, \`unexpected terminal state "\${ts}" — expected one of \${acceptableStates.join(', ')}\`).toContain(ts);`);
   } else {
-    // Safe (read-only) flow — just assert page didn't error
-    lines.push(`    const errorBanner = await page.getByRole('alert').count().catch(() => 0);`);
-    lines.push(`    expect(errorBanner, 'navigation flow surfaced an alert banner').toBe(0);`);
+    // Safe (read-only) flow — assert page didn't surface a real ERROR alert.
+    // role='alert' is also used by browser-extension toasts (e.g. MetaMask's
+    // "Pin the extension" message), so we filter to alerts whose text
+    // looks like an actual app-level error / failure / invalid-state signal.
+    lines.push(`    const errorAlerts = await page.getByRole('alert').filter({ hasText: /error|failed|invalid|reverted|insufficient|cannot|unable/i }).count().catch(() => 0);`);
+    lines.push(`    expect(errorAlerts, 'navigation surfaced an error-text alert').toBe(0);`);
   }
   lines.push(`  });`);
   lines.push('');
@@ -380,12 +383,12 @@ function emitOneRowSpec(
       const ctrl = controlById.get(cid); if (!ctrl) continue;
       if (cid === ec.controlId) {
         lines.push(`    // Step ${i + 1}: (edge) ${ctrl.name} → invalid value ${ec.invalidValue}`);
-        for (const stmt of controlToPlaywright(ctrl, ec.invalidValue, kg)) lines.push(`    ${stmt}`);
+        for (const stmt of controlToPlaywright(ctrl, ec.invalidValue, kg, profile)) lines.push(`    ${stmt}`);
       } else {
         let choice = cap.optionChoices[cid];
         if (ctrl.kind === 'modal-selector' && row.asset) choice = row.asset;
         lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
-        for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
+        for (const stmt of controlToPlaywright(ctrl, choice, kg, profile)) lines.push(`    ${stmt}`);
       }
       lines.push(`    await page.waitForTimeout(400);`);
     }
@@ -486,12 +489,46 @@ function describeControl(ctrl: Control, choice: string | undefined): string {
   return `${ctrl.name} (${ctrl.kind})`;
 }
 
-function controlToPlaywright(ctrl: Control, choice: string | undefined, kg: KnowledgeGraph): string[] {
+function controlToPlaywright(ctrl: Control, choice: string | undefined, kg: KnowledgeGraph, profile?: DAppProfile): string[] {
   switch (ctrl.kind) {
     case 'input': {
-      const val = choice ?? (ctrl.unit === 'USDC' ? '1' : '1');
+      // Default-value heuristic: a hardcoded "1" gets rejected by most real
+      // dApps (Avantis enforces 5000 USDC min, Aave has its own minimums).
+      // Order of preference:
+      //   1. Explicit choice from cap.optionChoices (LLM-named)
+      //   2. profile.values.preferredAmountUsd for USDC inputs
+      //   3. Per-unit hardcoded sane default
+      // Long-term fix is to surface UI-only minimums via the Explorer agent
+      // and fold them into dappConstraints; this only handles the static path.
+      // profile.values.preferredAmountUsd may be the legitimate min-derived value
+      // OR the sentinel "1" returned when comprehension couldn't extract a real min.
+      // Treat values <= 1 as sentinel and fall through to per-archetype defaults.
+      const usdHint = profile?.values?.preferredAmountUsd;
+      const realUsdHint = usdHint && usdHint > 1 ? usdHint : undefined;
+      const isUsd = ctrl.unit === 'USDC' || ctrl.unit === 'USD' || ctrl.unit === 'usd' || ctrl.unit === 'usdc';
+      let val: string;
+      if (choice !== undefined) {
+        val = String(choice);
+      } else if (isUsd && realUsdHint) {
+        val = String(realUsdHint);
+      } else if (isUsd && profile?.archetype === 'perps') {
+        // Perps dApps typically enforce $5+ min, often $1k–$5k for leveraged pairs.
+        // Use 5000 as a conservative default that satisfies Avantis-style mins.
+        // Real per-dApp min should come from Explorer agent surfacing UI validation.
+        val = '5000';
+      } else if (isUsd) {
+        val = '100';
+      } else if (ctrl.unit === 'ETH' || ctrl.unit === 'eth') {
+        val = '0.05';
+      } else if (ctrl.unit === 'BTC' || ctrl.unit === 'btc') {
+        val = '0.001';
+      } else if (ctrl.unit === 'x') {
+        val = String(profile?.values?.targetLeverage ?? '5');
+      } else {
+        val = '1';
+      }
       const loc = firstComponentLocator(ctrl, kg) ?? `page.locator('input').first()`;
-      return [`await ${loc}.fill(${JSON.stringify(String(val))}).catch(() => {});`];
+      return [`await ${loc}.fill(${JSON.stringify(val)}).catch(() => {});`];
     }
     case 'slider': {
       const val = choice ?? '25';
