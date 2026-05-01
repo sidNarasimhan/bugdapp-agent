@@ -13,7 +13,9 @@ import { join } from 'path';
 import { createOpenRouterClient } from '../core/llm.js';
 import type { AgentStateType, Capability, Control, DAppModule, StructuredDoc } from '../agent/state.js';
 
-const MODEL = process.env.CAPABILITY_NAMING_MODEL ?? 'anthropic/claude-sonnet-4.5';
+// Default to DeepSeek — naming is short-form structured output where DeepSeek
+// matches Sonnet quality at ~10x lower cost. Override with env if quality drops.
+const MODEL = process.env.CAPABILITY_NAMING_MODEL ?? 'deepseek/deepseek-chat';
 
 export function createCapabilityNamingNode() {
   return async (state: AgentStateType): Promise<Partial<AgentStateType>> => {

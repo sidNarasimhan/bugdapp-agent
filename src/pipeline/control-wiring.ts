@@ -18,7 +18,9 @@ import { join } from 'path';
 import { createOpenRouterClient } from '../core/llm.js';
 import type { AgentStateType, Control, StructuredDoc } from '../agent/state.js';
 
-const MODEL = process.env.CONTROL_WIRING_MODEL ?? 'anthropic/claude-sonnet-4.5';
+// Default DeepSeek — feedsInto/gates/affectedBy edge inference is structured
+// extraction over a constrained id-list; DeepSeek matches Sonnet at ~10x cost.
+const MODEL = process.env.CONTROL_WIRING_MODEL ?? 'deepseek/deepseek-chat';
 
 export function createControlWiringNode() {
   return async (state: AgentStateType): Promise<Partial<AgentStateType>> => {

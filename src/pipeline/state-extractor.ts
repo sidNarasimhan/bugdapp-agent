@@ -43,7 +43,13 @@ import {
 } from '../agent/kg-v2.js';
 import { loadKGv2, saveKGv2 } from './kg-build.js';
 
-const STATE_MODEL = process.env.STATE_MODEL ?? 'anthropic/claude-sonnet-4.5';
+// Default DeepSeek — state-machine naming per flow is the dominant cost in
+// the pipeline (84 flows × $X). DeepSeek handles structured per-flow JSON
+// at ~10x lower cost than Sonnet. State-extractor is the single biggest
+// LLM bill in a fresh-dApp run, so this default change drops total cost
+// from ~$10-25 per dApp to ~$2-5. Override with env if state names look
+// off on a particular dApp.
+const STATE_MODEL = process.env.STATE_MODEL ?? 'deepseek/deepseek-chat';
 
 interface LLMState {
   label: string;

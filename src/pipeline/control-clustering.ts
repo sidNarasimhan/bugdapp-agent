@@ -18,7 +18,10 @@ import { join } from 'path';
 import { createOpenRouterClient } from '../core/llm.js';
 import type { AgentStateType, Control, ControlKind, DAppModule, KGAsset, KnowledgeGraph } from '../agent/state.js';
 
-const MODEL = process.env.CONTROL_CLUSTERING_MODEL ?? 'anthropic/claude-sonnet-4.5';
+// Default DeepSeek — clustering DOM atoms into named Controls is structured
+// extraction; DeepSeek handles it at ~10x lower cost than Sonnet. Override
+// with env if a particular dApp's UI confuses the model.
+const MODEL = process.env.CONTROL_CLUSTERING_MODEL ?? 'deepseek/deepseek-chat';
 
 const VALID_KINDS: ControlKind[] = [
   'input', 'toggle', 'radio', 'tabs', 'percentage-picker', 'slider', 'dropdown',

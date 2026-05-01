@@ -14,7 +14,9 @@ import { join } from 'path';
 import { createOpenRouterClient } from '../core/llm.js';
 import type { AgentStateType, DAppModule, ModuleKind, KnowledgeGraph, StructuredDoc } from '../agent/state.js';
 
-const MODEL = process.env.MODULE_DISCOVERY_MODEL ?? 'anthropic/claude-sonnet-4.5';
+// Default DeepSeek — module clustering is structured extraction over a
+// constrained input (pages + components + docs). ~10x cheaper than Sonnet.
+const MODEL = process.env.MODULE_DISCOVERY_MODEL ?? 'deepseek/deepseek-chat';
 
 export function createModuleDiscoveryNode() {
   return async (state: AgentStateType): Promise<Partial<AgentStateType>> => {

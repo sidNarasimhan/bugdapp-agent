@@ -11,7 +11,9 @@ import { join } from 'path';
 import { createOpenRouterClient } from '../core/llm.js';
 import type { AgentStateType, StructuredDoc } from '../agent/state.js';
 
-const DOC_MODEL = process.env.DOC_MODEL ?? 'anthropic/claude-sonnet-4.5';
+// Default DeepSeek — per-doc {topics, rules} extraction is exactly the kind
+// of small structured-output task DeepSeek is good at. ~10x cheaper.
+const DOC_MODEL = process.env.DOC_MODEL ?? 'deepseek/deepseek-chat';
 
 export function createDocStructurerNode() {
   return async (state: AgentStateType): Promise<Partial<AgentStateType>> => {
