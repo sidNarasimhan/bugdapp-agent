@@ -7,45 +7,87 @@ Autonomous QA agent for Web3 dApps. Crawls a dApp from outside (URL only), build
 ## 1. The 30-second picture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                                                             │
-│   URL                                                                       │
-│    │                                                                        │
-│    ▼                                                                        │
-│  ┌───────────┐   ┌──────────┐   ┌────────────┐   ┌──────────────────┐       │
-│  │  CRAWLER  │──▶│  KG-V1   │──▶│  CAPS +    │──▶│   STATE EXTRACT  │       │
-│  │ (browser) │   │ (json)   │   │  CONTROLS  │   │  (LLM, per flow) │       │
-│  └───────────┘   └──────────┘   └────────────┘   └──────────────────┘       │
-│                                          │                  │               │
-│                                          ▼                  ▼               │
-│                                   ┌────────────────────────────────────┐    │
-│                                   │       KG v2  (THE BRAIN)           │    │
-│                                   │                                    │    │
-│                                   │   L1 Structural ── pages, cmps     │    │
-│                                   │   L2 Behavioral ── states, actions │    │
-│                                   │   L3 Technical  ── apis, contracts │    │
-│                                   │   L4 Semantic   ── flows, docs,    │    │
-│                                   │                    constraints,    │    │
-│                                   │                    assets, features│    │
-│                                   └────────────────────────────────────┘    │
-│                                          │                                  │
-│                  ┌───────────────────────┼──────────────────────┐           │
-│                  ▼                       ▼                      ▼           │
-│           ┌────────────┐          ┌─────────────┐        ┌──────────────┐   │
-│           │ PROBE/FIND │          │  SPEC GEN   │        │  VALIDATOR   │   │
-│           │ (queries)  │          │  (Playwright│        │ (assertion   │   │
-│           │            │          │   + chain   │        │  completeness│   │
-│           │            │          │   asserts)  │        │  rules)      │   │
-│           └────────────┘          └─────────────┘        └──────────────┘   │
-│                                          │                                  │
-│                                          ▼                                  │
-│                                   ┌────────────┐                            │
-│                                   │   RUNNER   │                            │
-│                                   │  + healer  │                            │
-│                                   └────────────┘                            │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                          │
+│  BUILD-TIME PIPELINE (10 logical phases, agent loop closes in ONE run)                   │
+│                                                                                          │
+│   URL ──► [1 CRAWL] ──► knowledge-graph.json (raw scaffolding) + scraped/network/docs    │
+│             │                                                                            │
+│             ▼                                                                            │
+│           [2 UNDERSTAND]    LLM     comprehend + doc-structurer  → archetype + rules     │
+│             │                                                                            │
+│             ▼                                                                            │
+│           [3 STRUCTURE]     LLM     module-discovery + control-cluster + control-wiring  │
+│             │                       per module → modules.json + controls.json            │
+│             ▼                                                                            │
+│           [4 DERIVE]        mixed   capability-derivation (no LLM)                       │
+│             │                       + capability-naming (LLM)                            │
+│             │                       + edge-case-derivation (no LLM, + heuristic personas)│
+│             ▼                                                                            │
+│           [5 ASSEMBLE-SKELETON]  no LLM   kg-build + tech-binder                         │
+│             │                                                                            │
+│             ▼                       skeleton kg-v2.json (queryable, no named states yet) │
+│           [6 MARKDOWN preliminary]  no LLM   knowledge/*.md (so explorer agent has docs) │
+│             │                                                                            │
+│             ▼                                                                            │
+│       ┌───────────────────────────────────────────────────────────┐                      │
+│       │  [7 EXPLORE]  LIVE AGENT  src/agent/loop.ts → runExecutor │                      │
+│       │     walks each module against the skeleton brain          │                      │
+│       │     → exploration.json (THIS run)                         │                      │
+│       └───────────────────────────────────────────────────────────┘                      │
+│             │                                                                            │
+│             ▼                                                                            │
+│           [8 ASSEMBLE-FINALIZE]  mixed                                                   │
+│             ├─ explorer-ingest  (no LLM)  fold THIS-run deltas into kg-v2                │
+│             ├─ state-extractor  (LLM)     name state machines per flow                   │
+│             │                              (sees explorer deltas in prompt)              │
+│             ├─ kg-cleanup       (no LLM)  drop superseded skeletons                      │
+│             └─ kg-validator     (no LLM)  schema + assertion-completeness rules          │
+│             │                                                                            │
+│             ▼                                                                            │
+│       ┌──────────────────────────────────────────────────────────┐                       │
+│       │  kg-v2.json   ← THE BRAIN (single source of truth)       │                       │
+│       │     L1 Structural   pages · components                   │                       │
+│       │     L2 Behavioral   states · actions · transitions       │                       │
+│       │     L3 Technical    apiCalls · contractCalls · events    │                       │
+│       │     L4 Semantic     flows · docs · constraints · assets  │                       │
+│       │                                            · features    │                       │
+│       └──────────────────────────────────────────────────────────┘                       │
+│             │                                                                            │
+│             ▼                                                                            │
+│           [9 MARKDOWN re-emit]  no LLM   knowledge/*.md reflects finalized brain         │
+│             │                                                                            │
+│             ▼                                                                            │
+│           [10 SPEC GEN]  no LLM   tests/<module>/<cap>.spec.ts                           │
+│                                   v2-enriched: state names, expected events,             │
+│                                   doc rules, constraints, failure modes                  │
+│                                                                                          │
+│  ────────────────────────────────────────────────────────────────────────────────────    │
+│                                                                                          │
+│  RUN-TIME (same kg-v2 brain consumed by three callers of the SAME agent)                 │
+│                                                                                          │
+│       npm run pipeline ── Phase 7 calls runExecutor (build-time KG enrichment)           │
+│                                                                                          │
+│       npm run run ────────► heal-runner ── runs Playwright specs                         │
+│                                            on failure → runExecutor recovers             │
+│                                            → spec-healer rewrites failing test()         │
+│                                                                                          │
+│       npm run chat ───────► chat handler ── act mode  → runExecutor (ad-hoc task)        │
+│                                          ── spec mode → heal-runner (saved spec)         │
+│                                                                                          │
+│  ────────────────────────────────────────────────────────────────────────────────────    │
+│                                                                                          │
+│  ONE agent function (src/agent/loop.ts:runExecutor),  THREE task contexts                │
+│  ONE brain (kg-v2.json),  THREE consumers (spec-gen, runExecutor knowledge.ts, chat)     │
+│                                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Two KG artifacts on disk by current design:
+- `knowledge-graph.json` — Phase 1 raw scaffolding consumed by Phases 2–4 only
+- `kg-v2.json` — Phase 8 finalized; THE brain consumed by spec-gen, runExecutor, chat, probes
+
+Folding crawler output directly into v2 nodes (eliminating v1) is the next architectural cleanup; not done yet.
 
 ---
 
@@ -64,7 +106,7 @@ Autonomous QA agent for Web3 dApps. Crawls a dApp from outside (URL only), build
 | 7 | **Capability Derivation** | no | Graph traversal → capabilities (one per submit-CTA path) | `capabilities.json` (unnamed) |
 | 8 | **Capability Naming** | yes | LLM labels each capability ("Open ZFP Long on ETH-USD") | `capabilities.json` |
 | 9 | **Edge Case Derivation** | no | constraints × capabilities → edge-case rows + heuristic personas (`riskClass + archetype`) | (in `capabilities.json`) |
-| 10a | **Assemble Brain — Skeleton** | no | `kg-migrate + tech-binder` — builds queryable skeleton kg-v2 BEFORE the live agent walks it | `kg-v2.json` (skeleton) |
+| 10a | **Assemble Brain — Skeleton** | no | `kg-build + tech-binder` — builds queryable skeleton kg-v2 BEFORE the live agent walks it | `kg-v2.json` (skeleton) |
 | 11a | **Markdown (preliminary)** | no | Module .md docs so explorer agent has context to load | `knowledge/*.md` |
 | 12 | **Explore** | yes | Live `runExecutor` agent walks each module against the skeleton brain | `exploration.json` (THIS run) |
 | 10b | **Assemble Brain — Finalize** | mixed | `explorer-ingest → state-extractor → cleanup → validator`. Folds Phase-12 findings into kg-v2 BEFORE state-extractor names states (so naming sees observed UI states). State-extractor is the only LLM step here. | finalized `kg-v2.json` + `kg-validation.json` + `exploration-deltas.json` |

@@ -54,7 +54,7 @@ Optional:
                               ├─ Capability Naming     LLM labels (per-module batched)
                               └─ Edge Case Derivation  constraints × caps + heuristic personas
 5.  ASSEMBLE BRAIN (skel)  no LLM                → skeleton kg-v2.json
-                              ├─ kg-migrate            v1 + sidecars → 4-layer skeleton
+                              ├─ kg-build              v1 + sidecars → 4-layer skeleton
                               └─ tech-binder           bind ApiCall/ContractCall/Event
 6.  MARKDOWN (preliminary) no LLM                → knowledge/*.md (so explorer agent has docs)
 7.  EXPLORE                LLM, live agent       → exploration.json (THIS run)
@@ -99,7 +99,7 @@ bugdapp-agent/
 │   ├── core/             ← Chromium + MetaMask + LLM + browser/wallet tools
 │   ├── chain/            ← viem clients + receipt decode + ABI registry
 │   ├── agent/            ← runtime: loop, session, knowledge, prompts, kg-v2, archetypes
-│   ├── pipeline/         ← all 18 phases + heal-runner + spec-healer
+│   ├── pipeline/         ← all 10 logical phases + heal-runner + spec-healer
 │   └── chat/             ← intent + matcher + handler + transports (CLI/Slack/Discord)
 ├── templates/            ← wallet.fixture.ts + playwright.config.ts (copied at gen)
 ├── metamask-extension/   ← bundled MM (gitignored)
