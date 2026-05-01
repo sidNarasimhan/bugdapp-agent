@@ -167,65 +167,75 @@ export function createComprehensionSpecGenNode() {
       if (!mod) continue;
       const modSlug = mod.id.replace(/^module:/, '').replace(/:/g, '-');
       const baseSlug = slug(cap.name || cap.id.split(':').pop() || 'cap');
-      // Append option-choice differentiators so Long vs Short, Market vs Limit produce
-      // distinct filenames even when the Capability Naming phase gave them the same name.
       const choiceParts: string[] = [];
       for (const [ctrlId, val] of Object.entries(cap.optionChoices)) {
         const ctrl = controlById.get(ctrlId);
         if (!ctrl) continue;
-        // Skip axes that the name already reflects (toggles that clearly shape the name like ZFP)
         const kind = ctrl.kind;
-        if (kind === 'toggle') continue;  // toggle on/off usually in name already
-        if (kind === 'percentage-picker') continue;  // % in name
+        if (kind === 'toggle') continue;
+        if (kind === 'percentage-picker') continue;
         const v = String(val).toLowerCase().replace(/[^a-z0-9]+/g, '');
         if (v && v !== baseSlug) choiceParts.push(v);
       }
       let capSlug = choiceParts.length > 0
         ? `${baseSlug}-${choiceParts.join('-')}`.slice(0, 90)
         : baseSlug;
-      // Uniqueness guard
-      const key = `${modSlug}/${capSlug}`;
-      if (usedSlugs.has(key)) {
-        let i = 2;
-        while (usedSlugs.has(`${modSlug}/${capSlug}-${i}`)) i++;
-        capSlug = `${capSlug}-${i}`;
-      }
-      usedSlugs.add(`${modSlug}/${capSlug}`);
 
-      const dir = join(testsDir, modSlug);
-      mkdirSync(dir, { recursive: true });
-      const filename = `${capSlug}.spec.ts`;
       const v2 = enrichFromV2(cap, kgv2);
-      const code = emitCapabilitySpec(cap, mod, controlById, kg, profile, config.url, v2);
-      const fullPath = join(dir, filename);
-      writeFileSync(fullPath, code, 'utf-8');
-      specFiles.push(fullPath);
+
+      // Per-asset split: detect modal-selector axis and emit one spec PER asset row.
+      // Each file = one runnable Playwright spec for one (capability × asset) combo,
+      // including the happy-path test + that asset's class-applicable edge cases.
+      // Capabilities without an asset axis emit a single spec.
+      const modalCtrl = cap.controlPath
+        .map(cid => controlById.get(cid))
+        .find(c => c?.kind === 'modal-selector' && Array.isArray(c?.options) && (c?.options?.length ?? 0) > 1) as Control | undefined;
+      const testRows: Array<{ asset?: string }> = modalCtrl?.options?.length
+        ? sampleTestRows(modalCtrl.options, kg).map(asset => ({ asset }))
+        : [{}];
+
+      for (const row of testRows) {
+        const assetSlug = row.asset ? slug(row.asset) : '';
+        let fileSlug = assetSlug ? `${capSlug}-${assetSlug}` : capSlug;
+        // Uniqueness guard per (module, file).
+        const key = `${modSlug}/${fileSlug}`;
+        if (usedSlugs.has(key)) {
+          let i = 2;
+          while (usedSlugs.has(`${modSlug}/${fileSlug}-${i}`)) i++;
+          fileSlug = `${fileSlug}-${i}`;
+        }
+        usedSlugs.add(`${modSlug}/${fileSlug}`);
+
+        const dir = join(testsDir, modSlug);
+        mkdirSync(dir, { recursive: true });
+        const filename = `${fileSlug}.spec.ts`;
+        const code = emitOneRowSpec(cap, row, mod, controlById, kg, profile, config.url, v2, testRows.length);
+        const fullPath = join(dir, filename);
+        writeFileSync(fullPath, code, 'utf-8');
+        specFiles.push(fullPath);
+      }
     }
     console.log(`[SpecGen] wrote ${specFiles.length} specs across ${new Set(specFiles.map(s => dirname(s))).size} module dirs`);
     return { specFiles };
   };
 }
 
-// ── Per-capability spec emission ───────────────────────────────────────
+// ── Per-capability-per-row spec emission ───────────────────────────────
+// One file per (capability × asset row) — runnable independently via
+// `npx playwright test tests/<module>/<cap>-<asset>.spec.ts`.
 
-function emitCapabilitySpec(
+function emitOneRowSpec(
   cap: Capability,
+  row: { asset?: string },
   mod: DAppModule,
   controlById: Map<string, Control>,
   kg: KnowledgeGraph,
   profile: DAppProfile,
   url: string,
   v2: V2Enrichment,
+  totalRows: number,
 ): string {
   const lines: string[] = [];
-  // Detect modal-selector axis (typically asset selector) — one sample asset per
-  // group so WTI, EUR/USD, AAPL, XAU, BTC all get exercised without exploding.
-  const modalCtrl = cap.controlPath
-    .map(cid => controlById.get(cid))
-    .find(c => c?.kind === 'modal-selector' && Array.isArray(c?.options) && (c?.options?.length ?? 0) > 1) as Control | undefined;
-  const testRows: Array<{ asset?: string }> = modalCtrl?.options?.length
-    ? sampleTestRows(modalCtrl.options, kg).map(asset => ({ asset }))
-    : [{}];
 
   lines.push(`// Auto-generated from capability ${cap.id}`);
   lines.push(`// Module: ${mod.name} (${mod.kind}${cap.archetype ? `, ${cap.archetype}` : ''})`);
@@ -233,8 +243,8 @@ function emitCapabilitySpec(
   lines.push(`// Intent: ${cap.intent}`);
   lines.push(`// Personas: ${cap.personas.join(', ')}`);
   lines.push(`// Risk: ${cap.riskClass}`);
-  if (testRows.length > 1) {
-    lines.push(`// Data-driven: ${testRows.length} asset rows — ${testRows.map(r => r.asset).join(', ')}`);
+  if (row.asset) {
+    lines.push(`// Asset: ${row.asset}  (1 of ${totalRows} asset rows for this capability)`);
   }
   // v2 KG enrichment block — visible to anyone reading the spec, citable when
   // assertions fail. Skipped silently if v2 KG isn't on disk.
@@ -264,7 +274,7 @@ function emitCapabilitySpec(
     }
   }
   lines.push('');
-  lines.push(`import { test, expect, connectWallet, raceConfirmTransaction, verifyPage, emitFindingIfNeeded } from '../../fixtures/wallet.fixture';`);
+  lines.push(`import { test, expect, connectWallet, raceConfirmTransaction, verifyPage, emitFindingIfNeeded, getTestWalletAddress } from '../../fixtures/wallet.fixture';`);
   lines.push('');
   lines.push(`const DAPP_URL = ${JSON.stringify(url)};`);
   lines.push(`const DAPP_CHAIN_ID = ${profile.network.chainId};`);
@@ -278,107 +288,124 @@ function emitCapabilitySpec(
   lines.push(`const CONNECT_HINTS = ${JSON.stringify(profile.selectors?.connect ?? {})};`);
   lines.push('');
 
-  lines.push(`test.describe(${JSON.stringify(`${mod.name} — ${cap.name}`)}, () => {`);
+  lines.push(`test.describe(${JSON.stringify(`${mod.name} — ${cap.name}${row.asset ? ' — ' + row.asset : ''}`)}, () => {`);
   lines.push(`  test.beforeEach(async ({ page }) => {`);
   lines.push(`    await connectWallet(page, DAPP_URL, CHAIN_PARAMS, CONNECT_HINTS);`);
   lines.push(`  });`);
   lines.push('');
 
-  // Happy path — one test per data row (asset). If no modal-selector in path, 1 row.
-  for (const row of testRows) {
-    const titleSuffix = row.asset ? ` on ${row.asset}` : '';
-    lines.push(`  test(${JSON.stringify(`[${cap.personas.join('/')}] ${cap.intent || cap.name}${titleSuffix}`)}, async ({ page }) => {`);
-    lines.push(`    // Rationale: ${cap.intent || cap.name}`);
-    if (row.asset) lines.push(`    // Asset row: ${row.asset}`);
-    if (cap.successCriteria) lines.push(`    // Expected: ${cap.successCriteria}`);
-    if (cap.preconditions.length) lines.push(`    // Preconditions: ${cap.preconditions.join('; ')}`);
+  // ── Happy path test for this row ─────────────────────────────────────
+  const titleSuffix = row.asset ? ` on ${row.asset}` : '';
+  lines.push(`  test(${JSON.stringify(`[${cap.personas.join('/')}] happy: ${cap.intent || cap.name}${titleSuffix}`)}, async ({ page }) => {`);
+  lines.push(`    // Rationale: ${cap.intent || cap.name}`);
+  if (row.asset) lines.push(`    // Asset: ${row.asset}`);
+  if (cap.successCriteria) lines.push(`    // Expected: ${cap.successCriteria}`);
+  if (cap.preconditions.length) lines.push(`    // Preconditions: ${cap.preconditions.join('; ')}`);
+  if (v2.startState) lines.push(`    // v2 KG initial state: ${v2.startState.label}`);
+  if (v2.endState)   lines.push(`    // v2 KG terminal state: ${v2.endState.label}`);
+  lines.push('');
+  for (let i = 0; i < cap.controlPath.length; i++) {
+    const cid = cap.controlPath[i];
+    const ctrl = controlById.get(cid); if (!ctrl) continue;
+    let choice = cap.optionChoices[cid];
+    if (ctrl.kind === 'modal-selector' && row.asset) choice = row.asset;
+    lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
+    for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
+    lines.push(`    await page.waitForTimeout(500);`);
+  }
+  lines.push('');
+  lines.push(`    await page.waitForTimeout(1500);`);
+  if (cap.riskClass !== 'safe') {
+    lines.push(`    try { await raceConfirmTransaction(page.context(), page); } catch {}`);
+    lines.push(`    await page.waitForTimeout(3000);`);
+    lines.push(`    const wallet = getTestWalletAddress();`);
+    lines.push(`    const result = await verifyPage(page, { archetype: ${JSON.stringify(profile.archetype)}, wallet, defaultChainId: DAPP_CHAIN_ID });`);
+    lines.push(`    const dir = await emitFindingIfNeeded(test.info(), result, { dapp: ${JSON.stringify(profile.name)}, url: DAPP_URL, archetype: ${JSON.stringify(profile.archetype)}, chainId: DAPP_CHAIN_ID, wallet });`);
+    lines.push(`    if (dir) console.log('[chain] finding bundle:', dir);`);
+    lines.push(`    console.log('[terminal state]', (result as any).classified?.state ?? 'unknown');`);
+    if (v2.walletSignEvents.length) {
+      // Real assertion: we expected on-chain events, at least one must be observed.
+      // Log all expected + observed first so failure messages are diagnostic.
+      lines.push(`    // v2 KG expected events:`);
+      for (const sig of v2.walletSignEvents.slice(0, 4)) {
+        lines.push(`    console.log('[v2 expect event]', ${JSON.stringify(sig)});`);
+      }
+      lines.push(`    const observedSigs = (result.receipts ?? []).flatMap(r => (r.events ?? []).map((e: any) => e.signature)).filter(Boolean);`);
+      lines.push(`    const expectedSigs = ${JSON.stringify(v2.walletSignEvents.slice(0, 4))};`);
+      lines.push(`    const matched = expectedSigs.filter(s => observedSigs.some((o: string) => o.startsWith(s.split('(')[0])));`);
+      lines.push(`    console.log('[v2 event coverage]', matched.length + '/' + expectedSigs.length, 'expected events seen');`);
+      // Assertion is soft for now (test.fail-tolerant) because tx may not actually
+      // submit on every dApp without funded wallet. Mark with annotation so reports
+      // distinguish "didn't observe events" from "test broke".
+      lines.push(`    test.info().annotations.push({ type: 'v2-event-coverage', description: matched.length + '/' + expectedSigs.length });`);
+      lines.push(`    if (result.receipts && result.receipts.length > 0) {`);
+      lines.push(`      // We DID see receipts → expect at least one to match a known event sig`);
+      lines.push(`      expect(matched.length, 'observed receipts but none matched expected v2 KG events: ' + expectedSigs.join(', ')).toBeGreaterThan(0);`);
+      lines.push(`    }`);
+    }
+    // Terminal state assertion: result.classified.state should be one of the
+    // archetype-expected outcomes. We allow 'ready-to-action' (form filled, awaiting
+    // tx) and any tx-success classification, AND known unfunded/unconnected states.
+    lines.push(`    const acceptableStates = ['ready-to-action', 'tx-success', 'success', 'unfunded', 'needs-approval'];`);
+    lines.push(`    const ts = (result as any).classified?.state;`);
+    lines.push(`    expect(acceptableStates, \`unexpected terminal state "\${ts}" — expected one of \${acceptableStates.join(', ')}\`).toContain(ts);`);
+  } else {
+    // Safe (read-only) flow — just assert page didn't error
+    lines.push(`    const errorBanner = await page.getByRole('alert').count().catch(() => 0);`);
+    lines.push(`    expect(errorBanner, 'navigation flow surfaced an alert banner').toBe(0);`);
+  }
+  lines.push(`  });`);
+  lines.push('');
+
+  // ── Edge cases for THIS asset row ────────────────────────────────────
+  // Filter to: edges scoped to this row's asset class, OR unscoped edges
+  // (those fire once per capability — emit them on the first row only).
+  const symbolToClass = buildSymbolClassMap(kg);
+  const isFirstRow = totalRows === 1 || row.asset === undefined; // For multi-row caps we still emit unscoped edges per row to keep each spec self-contained
+  const applicableEdges = cap.edgeCases.slice(0, 12).filter(ec => {
+    const scope = ec.appliesToAssetClass;
+    if (!scope) return true; // unscoped — applies to every row
+    if (!row.asset) return false;
+    return symbolToClass.get(row.asset) === scope;
+  });
+  for (const ec of applicableEdges) {
+    const scope = ec.appliesToAssetClass;
+    lines.push(`  test(${JSON.stringify(`[edge] ${ec.name}${titleSuffix}`)}, async ({ page }) => {`);
+    lines.push(`    // Constraint: ${ec.constraintId}${scope ? ` (asset class: ${scope})` : ''}`);
+    lines.push(`    // Expected: ${ec.expectedRejection}`);
+    if (row.asset) lines.push(`    // Asset: ${row.asset}`);
     lines.push('');
     for (let i = 0; i < cap.controlPath.length; i++) {
       const cid = cap.controlPath[i];
       const ctrl = controlById.get(cid); if (!ctrl) continue;
-      // For the modal-selector on this path, use the row's asset as the choice
-      let choice = cap.optionChoices[cid];
-      if (ctrl.kind === 'modal-selector' && row.asset) choice = row.asset;
-      lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
-      for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
-      lines.push(`    await page.waitForTimeout(500);`);
-    }
-    // Wallet confirm + on-chain verify for tx-involving
-    lines.push('');
-    lines.push(`    await page.waitForTimeout(1500);`);
-    if (cap.riskClass !== 'safe') {
-      lines.push(`    try { await raceConfirmTransaction(page.context(), page); } catch {}`);
-      lines.push(`    await page.waitForTimeout(3000);`);
-      lines.push(`    try {`);
-      lines.push(`      const result = await verifyPage(page, { url: DAPP_URL, archetype: ${JSON.stringify(profile.archetype)}, chainId: DAPP_CHAIN_ID });`);
-      lines.push(`      const dir = await emitFindingIfNeeded(result);`);
-      lines.push(`      if (dir) console.log('[chain] finding bundle:', dir);`);
-      // v2 KG: log expected event signatures so a test reader knows EXACTLY
-      // what should appear on-chain. verifyPage already runs archetype assertions
-      // — these console.logs make the linkage between v2 KG and assertion result visible.
-      if (v2.walletSignEvents.length) {
-        lines.push(`      // v2 KG expected events (assertion target):`);
-        for (const sig of v2.walletSignEvents.slice(0, 4)) {
-          lines.push(`      console.log('[v2 expect event]', ${JSON.stringify(sig)});`);
-        }
-        lines.push(`      const observedSigs = (result.receipts ?? []).flatMap(r => (r.events ?? []).map((e: any) => e.signature)).filter(Boolean);`);
-        lines.push(`      const expectedSigs = ${JSON.stringify(v2.walletSignEvents.slice(0, 4))};`);
-        lines.push(`      const matched = expectedSigs.filter(s => observedSigs.some((o: string) => o.startsWith(s.split('(')[0])));`);
-        lines.push(`      console.log('[v2 event coverage]', matched.length + '/' + expectedSigs.length, 'expected events seen');`);
+      if (cid === ec.controlId) {
+        lines.push(`    // Step ${i + 1}: (edge) ${ctrl.name} → invalid value ${ec.invalidValue}`);
+        for (const stmt of controlToPlaywright(ctrl, ec.invalidValue, kg)) lines.push(`    ${stmt}`);
+      } else {
+        let choice = cap.optionChoices[cid];
+        if (ctrl.kind === 'modal-selector' && row.asset) choice = row.asset;
+        lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
+        for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
       }
-      lines.push(`    } catch (err) { console.warn('[chain]', (err as Error).message); }`);
+      lines.push(`    await page.waitForTimeout(400);`);
     }
+    lines.push('');
+    lines.push(`    // Assert rejection — either (a) UI shows error/warning text, OR`);
+    lines.push(`    // (b) the submit CTA is disabled. Either is a valid rejection signal.`);
+    lines.push(`    await page.waitForTimeout(1500);`);
+    lines.push(`    const bodyText = await page.locator('body').innerText().catch(() => '');`);
+    lines.push(`    const looksRejected = /insufficient|minimum|maximum|invalid|reject|not\\s*allowed|too\\s*(low|high)|exceeds|wrong\\s*network|disconnect/i.test(bodyText);`);
+    lines.push(`    const submitButtons = page.getByRole('button').filter({ hasText: /submit|trade|confirm|place|swap|deposit|borrow|stake/i });`);
+    lines.push(`    const ctaCount = await submitButtons.count().catch(() => 0);`);
+    lines.push(`    let allCtasDisabled = ctaCount > 0;`);
+    lines.push(`    for (let k = 0; k < ctaCount; k++) {`);
+    lines.push(`      const enabled = await submitButtons.nth(k).isEnabled().catch(() => false);`);
+    lines.push(`      if (enabled) { allCtasDisabled = false; break; }`);
+    lines.push(`    }`);
+    lines.push(`    console.log('[edge]', ${JSON.stringify(ec.name + titleSuffix)}, 'rejectedText=', looksRejected, 'ctaDisabled=', allCtasDisabled);`);
+    lines.push(`    expect(looksRejected || allCtasDisabled, ${JSON.stringify(`expected rejection signal for "${ec.name}${titleSuffix}" — neither error text nor disabled CTA`)}).toBe(true);`);
     lines.push(`  });`);
     lines.push('');
-  }
-
-  // Edge cases — one test per (edge-case × applicable row). Class-scoped
-  // constraints (e.g. "Max leverage for Forex is 50x") only fire on rows
-  // whose asset is in that class. Unscoped edge cases (wallet disconnect,
-  // wrong network) fire once per capability regardless of row.
-  const symbolToClass = buildSymbolClassMap(kg);
-  for (const ec of cap.edgeCases.slice(0, 12)) {
-    const target = controlById.get(ec.controlId);
-    const scope = ec.appliesToAssetClass;
-    // Determine which rows this edge case fires on
-    const edgeRows: Array<{ asset?: string }> = scope
-      ? testRows.filter(r => r.asset && symbolToClass.get(r.asset) === scope)
-      : (testRows.length > 1 ? [testRows[0]] : testRows);  // unscoped → just the canonical row
-    if (edgeRows.length === 0) continue;
-
-    for (const row of edgeRows) {
-      const titleSuffix = row.asset ? ` on ${row.asset}` : '';
-      lines.push(`  test(${JSON.stringify(`[edge] ${ec.name}${titleSuffix}`)}, async ({ page }) => {`);
-      lines.push(`    // Constraint: ${ec.constraintId}${scope ? ` (asset class: ${scope})` : ''}`);
-      lines.push(`    // Expected: ${ec.expectedRejection}`);
-      if (row.asset) lines.push(`    // Asset row: ${row.asset}`);
-      lines.push('');
-      // Re-emit happy path until the targeted control, then substitute invalid value
-      for (let i = 0; i < cap.controlPath.length; i++) {
-        const cid = cap.controlPath[i];
-        const ctrl = controlById.get(cid); if (!ctrl) continue;
-        if (cid === ec.controlId) {
-          lines.push(`    // Step ${i + 1}: (edge) ${ctrl.name} → invalid value ${ec.invalidValue}`);
-          for (const stmt of controlToPlaywright(ctrl, ec.invalidValue, kg)) lines.push(`    ${stmt}`);
-        } else {
-          let choice = cap.optionChoices[cid];
-          if (ctrl.kind === 'modal-selector' && row.asset) choice = row.asset;
-          lines.push(`    // Step ${i + 1}: ${describeControl(ctrl, choice)}`);
-          for (const stmt of controlToPlaywright(ctrl, choice, kg)) lines.push(`    ${stmt}`);
-        }
-        lines.push(`    await page.waitForTimeout(400);`);
-      }
-      lines.push('');
-      lines.push(`    // Assert rejection — we don't click submit, we classify terminal state`);
-      lines.push(`    await page.waitForTimeout(1500);`);
-      lines.push(`    const bodyText = await page.locator('body').innerText().catch(() => '');`);
-      lines.push(`    const looksRejected = /insufficient|minimum|maximum|invalid|reject|not\\s*allowed|too\\s*(low|high)|Wrong\\s*Network/i.test(bodyText);`);
-      lines.push(`    console.log('[edge]', ${JSON.stringify(ec.name + titleSuffix)}, 'rejected=', looksRejected);`);
-      lines.push(`    // soft assertion — some dApps silently disable the CTA rather than error`);
-      lines.push(`    expect(true).toBe(true);`);
-      lines.push(`  });`);
-      lines.push('');
-    }
   }
 
   lines.push(`});`);
