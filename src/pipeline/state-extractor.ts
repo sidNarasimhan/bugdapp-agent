@@ -276,12 +276,46 @@ export function createStateExtractorNode() {
           });
         }
 
-        // Match LLM transitions to existing Action nodes by label, emit edges.
+        // Match LLM transitions to existing Action nodes by label.
+        // Defensive matching: LLMs often drop suffixes like "→ Market" or
+        // re-verb-ify labels. Try exact → case-insensitive → arrow-prefix →
+        // substring. Track unmatched action labels — kg-cleanup must NOT
+        // delete migrator skeletons for actions the LLM didn't cover, or
+        // the validator complains (E1/E2: action has no REQUIRES_STATE).
         const actionByLabel = new Map<string, ActionNode>();
-        for (const a of actions) actionByLabel.set(a.label, a);
+        const actionByLabelLower = new Map<string, ActionNode>();
+        const actionByPrefix = new Map<string, ActionNode>();   // text before "→"
+        for (const a of actions) {
+          actionByLabel.set(a.label, a);
+          actionByLabelLower.set(a.label.toLowerCase().trim(), a);
+          const prefix = a.label.split(/[→\->]/)[0].trim().toLowerCase();
+          if (prefix && !actionByPrefix.has(prefix)) actionByPrefix.set(prefix, a);
+        }
+        const matchedActionIds = new Set<string>();
+        const fuzzyMatches: string[] = [];
+        const matchAction = (llmLabel: string): ActionNode | undefined => {
+          let a = actionByLabel.get(llmLabel);
+          if (a) return a;
+          const lower = (llmLabel || '').toLowerCase().trim();
+          a = actionByLabelLower.get(lower);
+          if (a) { fuzzyMatches.push(`case: "${llmLabel}" → "${a.label}"`); return a; }
+          // arrow-prefix: LLM may say "Asset Selector" for "Asset Selector → BTC-USD"
+          a = actionByPrefix.get(lower);
+          if (a) { fuzzyMatches.push(`prefix: "${llmLabel}" → "${a.label}"`); return a; }
+          // substring containment
+          for (const [label, action] of actionByLabel) {
+            const haystack = label.toLowerCase();
+            if (haystack.includes(lower) || lower.includes(haystack.split(/[→\->]/)[0].trim().toLowerCase())) {
+              fuzzyMatches.push(`substr: "${llmLabel}" → "${label}"`);
+              return action;
+            }
+          }
+          return undefined;
+        };
         for (const t of json.transitions) {
-          const a = actionByLabel.get(t.actionLabel);
+          const a = matchAction(t.actionLabel);
           if (!a) continue;
+          matchedActionIds.add(a.id);
           const fromId = labelToId.get(t.from);
           const toId = labelToId.get(t.to);
           if (!fromId || !toId) continue;
@@ -297,6 +331,35 @@ export function createStateExtractorNode() {
             from: a.id, to: toId, edgeType,
             label: t.reason,
           });
+        }
+
+        // Fallback for actions the LLM didn't reference at all. kg-cleanup
+        // is about to delete the migrator skeleton states they currently
+        // point at — without a replacement edge they'd become orphan
+        // (validator E1/E2). Wire them defensively to the LLM initial and
+        // success states so the chain stays connected.
+        const unmatchedActions = actions.filter(a => !matchedActionIds.has(a.id));
+        if (unmatchedActions.length > 0) {
+          console.warn(`  ⚠ flow ${flow.label.slice(0, 40)}: ${unmatchedActions.length} actions LLM did not reference (fallback edges → initial/success): ${unmatchedActions.map(a => a.label).join(', ').slice(0, 200)}`);
+          const fallbackInit = initialId ?? flow.startStateId;
+          const fallbackEnd = flow.endStateId;
+          for (const a of unmatchedActions) {
+            if (fallbackInit) {
+              b.addEdge({
+                ...stamp({ id: mintId('edge', { from: a.id, to: fallbackInit, t: 'REQUIRES_STATE', fb: 1 }), crawlId, provenance: 'inferred', observedAt, inferenceSource: `state-extractor:${STATE_MODEL}:fallback-unmatched` }),
+                from: a.id, to: fallbackInit, edgeType: 'REQUIRES_STATE',
+              });
+            }
+            if (fallbackEnd) {
+              b.addEdge({
+                ...stamp({ id: mintId('edge', { from: a.id, to: fallbackEnd, t: 'TRANSITIONS_TO', fb: 1 }), crawlId, provenance: 'inferred', observedAt, inferenceSource: `state-extractor:${STATE_MODEL}:fallback-unmatched` }),
+                from: a.id, to: fallbackEnd, edgeType: 'TRANSITIONS_TO',
+              });
+            }
+          }
+        }
+        if (fuzzyMatches.length > 0) {
+          console.log(`  ℹ flow ${flow.label.slice(0, 40)}: ${fuzzyMatches.length} fuzzy label matches (e.g. ${fuzzyMatches[0]})`);
         }
 
         succeeded++;
